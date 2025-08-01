@@ -1,0 +1,5 @@
+# Size of the images in the detector (H2RG is 2048 x 2048)
+image_shape: [2048, 2048]
+
+# Number of integrations up the ramp/exposure
+num_integrations: 450

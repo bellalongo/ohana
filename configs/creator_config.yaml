@@ -1,21 +1,81 @@
-output_dir: "./data/processed_data" 
-num_samples: 100
+# Directory for the training data to be saved to
+output_dir: "./data/processed" 
+
+# Size of the images in the detector (H2RG is 2048 x 2048)
 image_shape: [2048, 2048]
+
+# Number of integrations/reads up the ramp/exposure
 num_frames: 450
 
-gain: 1.062 # CHANGE ME
-saturation_dn: 65535 # CHANGE ME
+# Size of training data patches
 patch_size: [256, 256]
+
+# Size of overlap of the patches
 overlap: 32
+
+# Number of workers for the training set creation
 num_workers: 4
 
-injection_type: "cosmic_ray"
+# Number of event exposures per gain (16 total)
+num_exposure_events: 1 # CHANGE ME
 
-dark_current_range: [0.005, 0.015]
-read_noise_range: [10.0, 25.0]
-extra_noise_range: [0.5, 10]
+# Number of baseline event exposures per gain (16 total)
+num_baseline_exposures: 1 # CHANGE ME
 
-cosmic_ray_charge_range: [1000, 5000] # electrons
+# Kind of event in the data (cosmic_ray, snowball, rtn, all)
+injection_type: "all"
+
+# Number of cosmic rays per expsoure range
+cosmic_ray_per_exp_range: [100, 4000]
+
+# Number of snowballs per exposure range
+snowballs_per_exp_range: [1,3]
+
+# Number of random telegraph noise per exposure range
+rtn_per_exp_range: [100, 1500]
+
+# Detector gain
+gain_library: {
+    '18220_SCA': 1.062, # e- / c
+    '18248_SCA': 1.021,
+    '18266_SCA': 1.056,
+    '18274_SCA': 1.038,
+    '18275_SCA': 1.074,
+    '18282_SCA': 1.031,
+    '18283_SCA': 0.999,
+
+    '18273_CASE': 2.6290, # e- / c
+    '18546_CASE': 2.5264,
+    '18220_CASE': 2.6465,
+    '18274_CASE': 2.6025,
+    '18266_CASE': 2.6459,
+    '18248_CASE': 2.5931,
+    '18275_CASE': 2.6140,
+
+    '18282_EuclidFirmware': 1.827, # e- / c
+    '18283_EuclidFirmware': 1.776,
+}
+
+# Saturated pixel (in counts)
+saturation_dn: 65535 
+
+# Dark current range
+dark_current_range: [0.01, 0.02] # electrons
+
+# Read noise range
+read_noise_range: [15.0, 25.0] # electron
+
+# Additional gaussian noise range
+gaussian_noise_range: [0.5, 10] # electrons
+
+# Cosmic ray charge range
+cosmic_ray_charge_range: [1.0e3, 5.0e3] # electrons
+
+# Random telegraph noise offset range
 rtn_offset_range: [30, 300] # electrons
-snowball_radius_range: [3.0, 30.0] # pixels
-snowball_core_charge_range: [20000, 70000] # pixels
+
+# Snowball radius range
+snowball_radius_range: [2.0, 15.0] # pixels
+
+# Snowball core charge range
+snowball_core_charge_range: [2.0e4, 7.0e4] # electrons

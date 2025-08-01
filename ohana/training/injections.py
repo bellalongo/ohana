@@ -28,42 +28,7 @@ def generate_baseline_ramp(shape, num_frames, gain, saturation_level_counts,
     height, width = shape
     ramps_e = np.zeros((num_frames, height, width), dtype=np.float32)
 
-    for t in tqdm(range(num_frames)):
-        signal = dark_current * t + np.random.normal(0, read_noise, size=(height, width))
-        ramps_e[t] = signal
-
-    # Convert to counts
-    ramps_dn = ramps_e / gain
-
-    # Add extra Gaussian noise in DN (e.g., simulating post-subtraction variance)
-    if extra_gaussian_noise_dn > 0:
-        ramps_dn += np.random.normal(0, extra_gaussian_noise_dn, size=ramps_dn.shape)
-
-    # Clip to saturation
-    ramps_dn = np.clip(ramps_dn, 0, saturation_level_counts)
-
-    return ramps_dn
-
-def generate_baseline_ramp(shape, num_frames, gain, saturation_level_counts, 
-                           dark_current, read_noise, extra_gaussian_noise_dn):
-    """
-    Simulates a baseline up-the-ramp signal (in counts) with dark current and noise.
-
-    Args:
-        shape (tuple): (height, width)
-        num_frames (int): number of ramp frames
-        gain (float): e-/ADU
-        saturation_level_counts (float): DN at which saturation occurs
-        dark_current (float): electrons per second
-        read_noise (float): electrons (std dev)
-
-    Returns:
-        np.ndarray: ramp data of shape (num_frames, height, width), in counts
-    """
-    height, width = shape
-    ramps_e = np.zeros((num_frames, height, width), dtype=np.float32)
-
-    for t in tqdm(range(num_frames)):
+    for t in range(num_frames):
         signal = dark_current * t + np.random.normal(0, read_noise, size=(height, width))
         ramps_e[t] = signal
 
