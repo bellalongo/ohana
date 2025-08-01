@@ -1,0 +1,21 @@
+output_dir: "./data/processed_data" 
+num_samples: 100
+image_shape: [2048, 2048]
+num_frames: 450
+
+gain: 1.062 # CHANGE ME
+saturation_dn: 65535 # CHANGE ME
+patch_size: [256, 256]
+overlap: 32
+num_workers: 4
+
+injection_type: "cosmic_ray"
+
+dark_current_range: [0.005, 0.015]
+read_noise_range: [10.0, 25.0]
+extra_noise_range: [0.5, 10]
+
+cosmic_ray_charge_range: [1000, 5000] # electrons
+rtn_offset_range: [30, 300] # electrons
+snowball_radius_range: [3.0, 30.0] # pixels
+snowball_core_charge_range: [20000, 70000] # pixels
