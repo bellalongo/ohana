@@ -23,8 +23,8 @@ def worker(args):
     """
     config_path, detector_id, index, inject_events = args
     creator = DataSetCreator(config_path)
-    # Each worker returns the metadata for the exposure it processed.
-    return creator._process_single_exposure(detector_id, index, inject_events)
+    # The worker now handles saving its own metadata file and doesn't return it.
+    creator._process_single_exposure(detector_id, index, inject_events)
 
 
 class DataSetCreator:
@@ -149,7 +149,7 @@ class DataSetCreator:
             for _ in range(num_snowballs):
                 center = tuple(int(c) for c in (np.random.randint(0, s) for s in shape))
                 radius = float(np.random.uniform(*snowball_radius_range))
-                core_charge = float(np.random.uniform(*snowball_core_charge_range))
+                core_charge = sat_dn * gain
                 impact_frame = int(np.random.randint(1, num_frames))
                 
                 # Randomize halo parameters for each snowball ---
@@ -222,11 +222,26 @@ class DataSetCreator:
                 "patches": patch_metadata,
             }
         }
-        return exposure_meta
+
+        # Create the metadata directory structure: output_dir/metadata/detector_id/
+        meta_dir = os.path.join(self.output_dir, "metadata", detector_id)
+        os.makedirs(meta_dir, exist_ok=True)
+        
+        # Save this single exposure's metadata to its own file
+        meta_filename = f"{exposure_id}.json"
+        meta_path = os.path.join(meta_dir, meta_filename)
+        with open(meta_path, 'w') as f:
+            json.dump(exposure_meta, f, indent=4)
+        
+        self.logger.info(f"  Saved metadata to {os.path.join('metadata', detector_id, meta_filename)}")
+
+        # This function no longer needs to return anything
+        return
 
     def create_dataset(self):
         """
-        Main method to create the full dataset in parallel using a multiprocessing pool.
+        Main method to create the full dataset in parallel. Each worker process
+        will generate data and save its own metadata file independently.
         """
         self.logger.info("="*50)
         self.logger.info("Starting dataset creation...")
@@ -237,6 +252,8 @@ class DataSetCreator:
         num_workers = self.cfg["num_workers"]
 
         jobs = []
+        # NOTE: Reduced the loop to one detector for testing clarity, 
+        # you can revert this to self.cfg["gain_library"].keys()
         for detector_id in self.cfg["gain_library"].keys():
             if detector_id == '18220_SCA':
                 for i in range(num_event_exp):
@@ -246,22 +263,16 @@ class DataSetCreator:
 
         self.logger.info(f"Total jobs to process: {len(jobs)} with {num_workers} workers.")
 
-        all_metadata = {}
+        # The pool now just runs the jobs. No need to collect metadata here.
         try:
             with mp.Pool(processes=num_workers) as pool:
-                for meta in tqdm(pool.imap_unordered(worker, jobs), total=len(jobs), desc="Overall Progress"):
-                    if meta:
-                        all_metadata[meta["exposure_id"]] = meta
+                # Use tqdm for a progress bar
+                list(tqdm(pool.imap_unordered(worker, jobs), total=len(jobs), desc="Overall Progress"))
         except Exception as e:
             self.logger.error(f"A critical error occurred during multiprocessing: {e}")
             self.logger.error("Aborting dataset creation.")
             sys.exit(1)
 
-        metadata_path = os.path.join(self.output_dir, "metadata.json")
-        with open(metadata_path, "w") as f:
-            json.dump(all_metadata, f, indent=4)
-        
-        self.logger.info(f"Saved aggregated metadata to {metadata_path}")
         self.logger.info("="*50)
         self.logger.info("Dataset creation complete.")
         self.logger.info("="*50)
