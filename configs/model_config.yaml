@@ -1,5 +1,5 @@
 # Directory where generated HDF5 files and metadata are
-data_dir: "/projects/JWST_planets/ilongo/processed/" 
+data_dir: "redacted :)" 
 
 # Must match the patch size used during data generation
 patch_size: [256, 256]
