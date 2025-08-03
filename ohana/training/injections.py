@@ -26,16 +26,19 @@ def generate_baseline_ramp(shape, num_frames, gain, saturation_level_counts,
         np.ndarray: ramp data of shape (num_frames, height, width), in counts
     """
     height, width = shape
-    ramps_e = np.zeros((num_frames, height, width), dtype=np.float32)
-
-    for t in range(num_frames):
-        signal = dark_current * t + np.random.normal(0, read_noise, size=(height, width))
-        ramps_e[t] = signal
+    
+    # Create a time array and reshape for broadcasting
+    time_steps = np.arange(num_frames, dtype=np.float32).reshape(-1, 1, 1)
+    
+    # Generate the signal for all frames at once
+    dark_signal = dark_current * time_steps
+    noise = np.random.normal(0, read_noise, size=(num_frames, height, width))
+    ramps_e = dark_signal + noise
 
     # Convert to counts
     ramps_dn = ramps_e / gain
 
-    # Add extra Gaussian noise in DN (e.g., simulating post-subtraction variance)
+    # Add extra Gaussian noise
     if extra_gaussian_noise_dn > 0:
         ramps_dn += np.random.normal(0, extra_gaussian_noise_dn, size=ramps_dn.shape)
 

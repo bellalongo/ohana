@@ -14,7 +14,7 @@ patch_size: [256, 256]
 overlap: 32
 
 # Number of workers for the training set creation
-num_workers: 4
+num_workers: 15
 
 # Number of event exposures per gain (16 total)
 num_exposure_events: 1 # CHANGE ME
@@ -29,7 +29,7 @@ injection_type: "all"
 cosmic_ray_per_exp_range: [100, 4000]
 
 # Number of snowballs per exposure range
-snowballs_per_exp_range: [1,3]
+snowballs_per_exp_range: [0,3]
 
 # Number of random telegraph noise per exposure range
 rtn_per_exp_range: [100, 1500]

@@ -6,6 +6,7 @@ import logging
 import numpy as np
 from tqdm import tqdm
 import multiprocessing as mp
+from multiprocessing import Pool
 import sys
 
 from ohana.training.injections import (
@@ -128,7 +129,7 @@ class DataSetCreator:
             
             cosmic_ray_charge_range = self._validate_and_convert_range("cosmic_ray_charge_range")
             snowball_radius_range = self._validate_and_convert_range("snowball_radius_range")
-            snowball_core_charge_range = self._validate_and_convert_range("snowball_core_charge_range")
+            # snowball_core_charge_range = self._validate_and_convert_range("snowball_core_charge_range")
             rtn_offset_range = self._validate_and_convert_range("rtn_offset_range")
             
             # --- Load new snowball halo parameter ranges ---
@@ -238,7 +239,7 @@ class DataSetCreator:
         # This function no longer needs to return anything
         return
 
-    def create_dataset(self):
+    def create_dataset_local(self):
         """
         Main method to create the full dataset in parallel. Each worker process
         will generate data and save its own metadata file independently.
@@ -276,3 +277,58 @@ class DataSetCreator:
         self.logger.info("="*50)
         self.logger.info("Dataset creation complete.")
         self.logger.info("="*50)
+
+    def create_dataset(self, start, end):
+        """
+        Main method to create the full dataset in parallel.
+        The loop is driven by the start and end indices from the SLURM job array.
+        """
+        self.logger.info("="*50)
+        self.logger.info(f"Starting dataset creation for index range: {start} to {end}")
+        self.logger.info("="*50)
+
+        num_workers = self.cfg["num_workers"]
+        
+        # The 'jobs' list will hold all the tasks for this specific SLURM job
+        jobs = []
+
+        # The main loop now iterates over the range provided by the SLURM job
+        for i in range(start, end + 1):
+            # Inside this loop, we iterate through each detector as before
+            for detector_id in self.cfg["gain_library"].keys():
+                
+                # --- This is the key part ---
+                # For each index 'i' and each detector, add two jobs to the list:
+                # 1. An "event" exposure with injections.
+                # 2. A "baseline" exposure with NO injections.
+                
+                # The 'is_baseline' flag tells your worker function what to do.
+                # 'True' means create a baseline exposure.
+                jobs.append((self.config_path, detector_id, i, True)) 
+                
+                # 'False' means create an event exposure with injections.
+                jobs.append((self.config_path, detector_id, i, False))
+
+        self.logger.info(f"Created {len(jobs)} total jobs for this worker to process.")
+
+        # Now, use the multiprocessing pool to execute all the jobs
+        if num_workers > 1:
+            with Pool(processes=num_workers) as pool:
+                # You'll need a worker function (like _process_single_exposure_wrapper)
+                # that can unpack the tuple of arguments.
+                pool.starmap(self._process_single_exposure_wrapper, jobs)
+        else:
+            # For debugging without multiprocessing
+            for job_args in jobs:
+                self._process_single_exposure_wrapper(*job_args)
+                
+        self.logger.info(f"Finished processing all jobs for index range: {start} to {end}")
+
+    # You'll also need a small wrapper function if your worker function 
+    # doesn't already accept a tuple of arguments.
+    def _process_single_exposure_wrapper(self, config_path, detector_id, index, is_baseline):
+        """Helper function to unpack arguments for the multiprocessing pool."""
+        # Re-initialize the DataSetCreator or pass necessary components if needed
+        # This is important because multiprocessing creates new processes.
+        # A simpler approach might be to just call the processing method directly.
+        self._process_single_exposure(detector_id, index, is_baseline)
