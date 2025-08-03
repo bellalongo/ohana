@@ -99,7 +99,14 @@ def main():
     print(f"Validation set size: {len(val_dataset)}")
 
     # --- Model, Loss, Optimizer ---
-    model = CRNNAttention(num_classes=4).to(device)
+    model = CRNNAttention(num_classes=4) # Don't send to device yet
+
+    # Add this block to wrap the model for multi-GPU data parallelism
+    if torch.cuda.device_count() > 1:
+        print(f"Let's use {torch.cuda.device_count()} GPUs!")
+        model = nn.DataParallel(model)
+
+    model.to(device) # Now send the (potentially wrapped) model to the device
     print(model)
     
     # Use class weights to handle imbalance
