@@ -15,44 +15,23 @@ from ohana.training.injections import (
     inject_snowball,
 )
 
+# --- Multiprocessing Worker Function ---
 def worker(args):
     """
-        Worker function for the multiprocessing pool
-        Arguments:
-            args (tuple): a tuple containing (config_path, detector_id, index, inject_events)
-                config_path (str): path to the YAML configuration file
-                detector_id (str): identifier for the detector
-                index (int): index number for the exposure
-                inject_events (bool): whether to inject events into the exposure
-        Returns:
-            dict: Metadata dictionary for the processed exposure
+    Worker function for the multiprocessing pool. It initializes a DataSetCreator
+    instance and calls the processing method for a single exposure.
     """
-    # Pull the args
     config_path, detector_id, index, inject_events = args
-
-    # Create DataSetCreator instance
     creator = DataSetCreator(config_path)
-
-    # Each worker returns the metadata for the exposure it processed
+    # Each worker returns the metadata for the exposure it processed.
     return creator._process_single_exposure(detector_id, index, inject_events)
 
 
 class DataSetCreator:
-    """
-        Generate synthetic detector data, inject events, and create patched datasets
-        Attributes:
-            config_path (str): path to the YAML configuration file
-            cfg (dict): configuration dictionary loaded from YAML file
-            output_dir (str): directory path where output files will be saved
-            logger (logging.Logger): logger instance for this creator
-    """
+    """Generate synthetic detector data, inject events, and create patched datasets."""
+
     def __init__(self, config_path: str):
-        """
-            Initializes the creator with configuration from a YAML file
-            Arguments:
-                config_path (str): path to the yaml config file containing sim params
-        """
-        
+        """Initializes the creator with configuration from a YAML file."""
         self.config_path = config_path
         with open(config_path, "r") as f:
             self.cfg = yaml.safe_load(f)
@@ -91,7 +70,6 @@ class DataSetCreator:
     def _validate_and_convert_range(self, key):
         """
         Validates a range from the config and converts its values to floats.
-        This prevents TypeErrors if the YAML parser reads numbers as strings.
         """
         val = self.cfg.get(key)
         if not isinstance(val, list) or len(val) != 2:
@@ -117,7 +95,6 @@ class DataSetCreator:
         num_frames = self.cfg["num_frames"]
         sat_dn = self.cfg["saturation_dn"]
 
-        # Validate and convert ranges before use
         dark_current_range = self._validate_and_convert_range("dark_current_range")
         read_noise_range = self._validate_and_convert_range("read_noise_range")
         gaussian_noise_range = self._validate_and_convert_range("gaussian_noise_range")
@@ -149,11 +126,14 @@ class DataSetCreator:
             rtn_range = self._validate_and_convert_range("rtn_per_exp_range")
             num_rtn = np.random.randint(low=rtn_range[0], high=rtn_range[1] + 1)
             
-            # Validate and convert event parameter ranges
             cosmic_ray_charge_range = self._validate_and_convert_range("cosmic_ray_charge_range")
             snowball_radius_range = self._validate_and_convert_range("snowball_radius_range")
             snowball_core_charge_range = self._validate_and_convert_range("snowball_core_charge_range")
             rtn_offset_range = self._validate_and_convert_range("rtn_offset_range")
+            
+            # --- Load new snowball halo parameter ranges ---
+            snowball_halo_amp_range = self._validate_and_convert_range("snowball_halo_amplitude_ratio_range")
+            snowball_halo_decay_range = self._validate_and_convert_range("snowball_halo_decay_scale_range")
 
             params["injected_events"]["counts"]["cosmic_rays"] = int(num_crs)
             for _ in range(num_crs):
@@ -171,22 +151,48 @@ class DataSetCreator:
                 radius = float(np.random.uniform(*snowball_radius_range))
                 core_charge = float(np.random.uniform(*snowball_core_charge_range))
                 impact_frame = int(np.random.randint(1, num_frames))
-                def halo_profile(d): return np.exp(-d) * (core_charge / 10.0)
+                
+                # Randomize halo parameters for each snowball ---
+                halo_amplitude_ratio = float(np.random.uniform(*snowball_halo_amp_range))
+                halo_decay_scale = float(np.random.uniform(*snowball_halo_decay_range))
+
+                # Create a unique halo profile function for this specific snowball
+                def halo_profile(d):
+                    amplitude = core_charge * halo_amplitude_ratio
+                    return amplitude * np.exp(-d / halo_decay_scale)
+
                 inject_snowball(ramps, center, radius, core_charge, halo_profile, gain, sat_dn, impact_frame)
+                
+                # Save the new halo parameters in the metadata
                 params["injected_events"]["details"].append({
                     "type": "snowball", "center": center, "radius": radius, 
-                    "core_charge_e": core_charge, "impact_frame": impact_frame
+                    "core_charge_e": core_charge, "impact_frame": impact_frame,
+                    "halo_amplitude_ratio": halo_amplitude_ratio,
+                    "halo_decay_scale": halo_decay_scale
                 })
+
+            rtn_offset_range = self._validate_and_convert_range("rtn_offset_range")
+            # Add these new ranges to your config
+            rtn_period_range = self._validate_and_convert_range("rtn_period_range")
+            rtn_duty_fraction_range = self._validate_and_convert_range("rtn_duty_fraction_range")
 
             params["injected_events"]["counts"]["rtn"] = int(num_rtn)
             for _ in range(num_rtn):
                 position = tuple(int(p) for p in (np.random.randint(0, s) for s in shape))
                 offset_e = float(np.random.uniform(*rtn_offset_range))
-                num_switches = int(np.random.randint(2, 10))
-                switch_frames = sorted(np.random.choice(range(1, num_frames), size=num_switches, replace=False))
-                inject_rtn(ramps, position, offset_e, switch_frames, gain, sat_dn)
+                
+                # Draw period (T) and duty fraction (f) for each RTN event
+                period = int(np.random.uniform(*rtn_period_range))
+                duty_fraction = float(np.random.uniform(*rtn_duty_fraction_range))
+
+                inject_rtn(ramps, position, offset_e, period, duty_fraction, gain, sat_dn)
+                
                 params["injected_events"]["details"].append({
-                    "type": "rtn", "position": position, "offset_e": offset_e, "switch_frames": [int(sf) for sf in switch_frames]
+                    "type": "rtn", 
+                    "position": position, 
+                    "offset_e": offset_e, 
+                    "period_frames": period,
+                    "duty_fraction": duty_fraction
                 })
             
             self.logger.info(f"  Injecting: {num_crs} CRs, {num_snowballs} Snowballs, {num_rtn} RTN pixels.")
@@ -232,10 +238,11 @@ class DataSetCreator:
 
         jobs = []
         for detector_id in self.cfg["gain_library"].keys():
-            for i in range(num_event_exp):
-                jobs.append((self.config_path, detector_id, i, True))
-            for i in range(num_baseline_exp):
-                jobs.append((self.config_path, detector_id, i, False))
+            if detector_id == '18220_SCA':
+                for i in range(num_event_exp):
+                    jobs.append((self.config_path, detector_id, i, True))
+                for i in range(num_baseline_exp):
+                    jobs.append((self.config_path, detector_id, i, False))
 
         self.logger.info(f"Total jobs to process: {len(jobs)} with {num_workers} workers.")
 

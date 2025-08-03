@@ -57,33 +57,41 @@ def inject_cosmic_ray(ramps, position, frame_idx,
     
     ramps[:] = np.clip(ramps, 0, saturation_level_counts)
 
-def inject_rtn(ramps, position, high_offset_e, switch_frames, gain, saturation_level_counts):
+def inject_rtn(ramps, position, high_offset_e, period, duty_fraction, gain, saturation_level_counts):
     """
-    Injects a two-level Random Telegraph Noise (RTN) into a specified pixel of the ramp.
-
-    This simulates a signal that toggles between a low and a high state at specified times,
-    resembling metastable behavior in pixel output.
+    Injects a two-level Random Telegraph Noise (RTN) into a specified pixel of the ramp
+    using a two-state Markov model.
 
     Args:
         ramps (np.ndarray): The data cube of shape (n_reads, height, width).
         position (tuple): (row, col) index of the pixel to modify.
         high_offset_e (float): The amplitude of the high state in electrons.
-        switch_frames (list): Frame indices where the RTS toggles between high and low.
+        period (int): The total period (T) of one on/off cycle in frames.
+        duty_fraction (float): The fraction of the period (f) spent in the high state.
         gain (float): Gain in electrons per DN (e⁻/DN).
         saturation_level_counts (float): Maximum allowed DN value to clip the signal to.
-
-    Returns:
-        None: The `ramps` array is modified in-place.
     """
     high_offset_dn = high_offset_e / gain
-    is_high = False
+    num_frames = ramps.shape[0]
+    
+    # Determine the time for up and down states
+    up_time = int(period * duty_fraction)
+    down_time = int(period * (1 - duty_fraction))
 
-    for t in range(ramps.shape[0]):
-        if t in switch_frames:
-            is_high = not is_high
+    if up_time == 0 or down_time == 0: # Avoid getting stuck in one state
+        return
 
+    is_high = np.random.choice([True, False]) # Randomly start in high or low state
+    t = 0
+    while t < num_frames:
+        time_in_state = up_time if is_high else down_time
+        end_frame = min(t + time_in_state, num_frames)
+        
         if is_high:
-            ramps[t, position[0], position[1]] += high_offset_dn
+            ramps[t:end_frame, position[0], position[1]] += high_offset_dn
+        
+        t = end_frame
+        is_high = not is_high
 
     np.clip(ramps, 0, saturation_level_counts, out=ramps)
 
@@ -115,11 +123,8 @@ def inject_snowball(ramps, center, radius,
     halo_dn = halo_e / gain
 
     # Inject into the impact frame only
-    ramps[impact_frame, core_mask] += core_dn
-    ramps[impact_frame, halo_mask] += halo_dn
+    ramps[impact_frame:, core_mask] += core_dn
+    ramps[impact_frame:, halo_mask] += halo_dn
 
     # Saturate the core from this point forward
-    ramps[impact_frame:, core_mask] = np.clip(ramps[impact_frame:, core_mask],
-                                              0, saturation_level_counts)
-
-    ramps[:] = np.clip(ramps, 0, saturation_level_counts)
+    np.clip(ramps, 0, saturation_level_counts, out=ramps)

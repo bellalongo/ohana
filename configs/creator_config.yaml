@@ -56,8 +56,8 @@ gain_library: {
     '18283_EuclidFirmware': 1.776,
 }
 
-# Saturated pixel (in counts)
-saturation_dn: 65535 
+# Saturated pixel 
+saturation_dn: 65535 # DN
 
 # Dark current range
 dark_current_range: [0.01, 0.02] # electrons
@@ -69,13 +69,22 @@ read_noise_range: [15.0, 25.0] # electron
 gaussian_noise_range: [0.5, 10] # electrons
 
 # Cosmic ray charge range
-cosmic_ray_charge_range: [1.0e3, 5.0e3] # electrons
+cosmic_ray_charge_range: [2.0e2, 6.0e3] # electrons
 
 # Random telegraph noise offset range
 rtn_offset_range: [30, 300] # electrons
 
-# Snowball radius range
-snowball_radius_range: [2.0, 15.0] # pixels
+# Random telegraph noise period range in frames
+rtn_period_range: [20, 200] # frames
 
-# Snowball core charge range
-snowball_core_charge_range: [2.0e4, 7.0e4] # electrons
+# Random telegraph noise duty fraction range
+rtn_duty_fraction_range: [0.1, 0.9]
+
+# Snowball radius range
+snowball_radius_range: [5.0, 200.0] # pixels
+
+# Ratio of halo's peak brightness to core charge
+snowball_halo_amplitude_ratio_range: [0.02, 0.15] 
+
+# The e-folding length for the halo's exponential decay
+snowball_halo_decay_scale_range: [3.0, 30.0] # pixels
