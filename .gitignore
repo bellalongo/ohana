@@ -215,3 +215,5 @@ tree.py
 notebooks
 
 slurms
+
+configs/secret_creator_config.yaml

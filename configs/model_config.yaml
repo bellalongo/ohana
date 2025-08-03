@@ -1,0 +1,10 @@
+# Directory where generated HDF5 files and metadata are
+data_dir: "/projects/JWST_planets/ilongo/processed/" 
+
+# Must match the patch size used during data generation
+patch_size: [256, 256]
+
+# Training hyperparameters
+epochs: 50
+batch_size: 32
+learning_rate: 0.0001
