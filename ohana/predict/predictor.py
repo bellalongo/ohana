@@ -38,16 +38,17 @@ class Predictor:
         """Loads the PyTorch model from the specified path."""
         print(f"Loading model from: {self.model_path}")
         
-        # --- ACTION REQUIRED ---
-        # You must instantiate your model architecture here before loading the weights.
-        # Replace 'YourCNN' with the actual class name of your neural network.
-        # model = YourCNN(input_channels=self.cfg['num_frames'] - 1) # Example instantiation
-        num_input_channels = self.cfg['num_frames'] - 1
-        num_classes = self.cfg['num_classes']
+        # Get the number of classes from the config file.
+        # Ensure you have 'num_classes' in your creator_config.yaml
+        num_classes = self.cfg.get('num_classes')
+        if num_classes is None:
+            raise ValueError("Your config file must contain a 'num_classes' parameter.")
 
-        model = CRNNAttention(input_channels=num_input_channels, num_classes=num_classes)
-        if model is None:
-            raise NotImplementedError("You must instantiate your model architecture in _load_model().")
+        print(f"Instantiating CRNNAttention model with {num_classes} classes.")
+
+        # Create an instance of the model with the correct parameters.
+        # The CRNNAttention model only needs 'num_classes'.
+        model = CRNNAttention(num_classes=num_classes)
         
         # Load the saved weights (the state dictionary) into the model architecture
         model.load_state_dict(torch.load(self.model_path, map_location=self.device))
