@@ -48,14 +48,14 @@ def main():
 
         # 3. Print the results in a user-friendly format
         if anomalies:
-            print(f"\n✅ Success! Detected {len(anomalies)} anomalies:")
+            print(f"\nSuccess! Detected {len(anomalies)} anomalies:")
             anomalies.sort(key=lambda x: x['type'])
             for anomaly in anomalies:
                 loc = anomaly['location_px']
                 conf = anomaly.get('confidence', -1) * 100
                 print(f"  - Type: {anomaly['type']:<12} | Location: (y={loc[0]}, x={loc[1]}) | Confidence: {conf:.2f}%")
         else:
-            print("\n✅ Success! No anomalies were detected in the exposure.")
+            print("\nSuccess! No anomalies were detected in the exposure.")
 
         # 4. Save results to a file if an output path was provided
         if args.output:
@@ -65,7 +65,7 @@ def main():
             print("Save complete.")
 
     except Exception as e:
-        print(f"\n❌ An error occurred during prediction: {e}")
+        print(f"\nAn error occurred during prediction: {e}")
         sys.exit(1)
 
     end_time = time.time()
