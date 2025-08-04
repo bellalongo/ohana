@@ -94,6 +94,7 @@ class DataSetCreator:
         gain = self.cfg["gain_library"][detector_id]
         shape = tuple(self.cfg["image_shape"])
         num_frames = self.cfg["num_frames"]
+        read_time = self.cfg["read_time"] # Read the new read_time parameter
         sat_dn = self.cfg["saturation_dn"]
 
         dark_current_range = self._validate_and_convert_range("dark_current_range")
@@ -111,8 +112,9 @@ class DataSetCreator:
         }
 
         # --- 2. Generate baseline ramp ---
+        # Pass the new read_time parameter to the ramp generation function
         ramps = generate_baseline_ramp(
-            shape, num_frames, gain, sat_dn,
+            shape, num_frames, read_time, gain, sat_dn,
             dark_current, read_noise, gaussian_noise
         )
 
@@ -129,10 +131,8 @@ class DataSetCreator:
             
             cosmic_ray_charge_range = self._validate_and_convert_range("cosmic_ray_charge_range")
             snowball_radius_range = self._validate_and_convert_range("snowball_radius_range")
-            # snowball_core_charge_range = self._validate_and_convert_range("snowball_core_charge_range")
             rtn_offset_range = self._validate_and_convert_range("rtn_offset_range")
             
-            # --- Load new snowball halo parameter ranges ---
             snowball_halo_amp_range = self._validate_and_convert_range("snowball_halo_amplitude_ratio_range")
             snowball_halo_decay_range = self._validate_and_convert_range("snowball_halo_decay_scale_range")
 
@@ -153,18 +153,15 @@ class DataSetCreator:
                 core_charge = sat_dn * gain
                 impact_frame = int(np.random.randint(1, num_frames))
                 
-                # Randomize halo parameters for each snowball ---
                 halo_amplitude_ratio = float(np.random.uniform(*snowball_halo_amp_range))
                 halo_decay_scale = float(np.random.uniform(*snowball_halo_decay_range))
 
-                # Create a unique halo profile function for this specific snowball
                 def halo_profile(d):
                     amplitude = core_charge * halo_amplitude_ratio
                     return amplitude * np.exp(-d / halo_decay_scale)
 
                 inject_snowball(ramps, center, radius, core_charge, halo_profile, gain, sat_dn, impact_frame)
                 
-                # Save the new halo parameters in the metadata
                 params["injected_events"]["details"].append({
                     "type": "snowball", "center": center, "radius": radius, 
                     "core_charge_e": core_charge, "impact_frame": impact_frame,
@@ -173,7 +170,6 @@ class DataSetCreator:
                 })
 
             rtn_offset_range = self._validate_and_convert_range("rtn_offset_range")
-            # Add these new ranges to your config
             rtn_period_range = self._validate_and_convert_range("rtn_period_range")
             rtn_duty_fraction_range = self._validate_and_convert_range("rtn_duty_fraction_range")
 
@@ -182,7 +178,6 @@ class DataSetCreator:
                 position = tuple(int(p) for p in (np.random.randint(0, s) for s in shape))
                 offset_e = float(np.random.uniform(*rtn_offset_range))
                 
-                # Draw period (T) and duty fraction (f) for each RTN event
                 period = int(np.random.uniform(*rtn_period_range))
                 duty_fraction = float(np.random.uniform(*rtn_duty_fraction_range))
 
@@ -224,11 +219,9 @@ class DataSetCreator:
             }
         }
 
-        # Create the metadata directory structure: output_dir/metadata/detector_id/
         meta_dir = os.path.join(self.output_dir, "metadata", detector_id)
         os.makedirs(meta_dir, exist_ok=True)
         
-        # Save this single exposure's metadata to its own file
         meta_filename = f"{exposure_id}.json"
         meta_path = os.path.join(meta_dir, meta_filename)
         with open(meta_path, 'w') as f:
@@ -236,7 +229,6 @@ class DataSetCreator:
         
         self.logger.info(f"  Saved metadata to {os.path.join('metadata', detector_id, meta_filename)}")
 
-        # This function no longer needs to return anything
         return
 
     def create_dataset_local(self):
@@ -253,8 +245,6 @@ class DataSetCreator:
         num_workers = self.cfg["num_workers"]
 
         jobs = []
-        # NOTE: Reduced the loop to one detector for testing clarity, 
-        # you can revert this to self.cfg["gain_library"].keys()
         for detector_id in self.cfg["gain_library"].keys():
             if detector_id == '18220_SCA':
                 for i in range(num_event_exp):
@@ -264,10 +254,8 @@ class DataSetCreator:
 
         self.logger.info(f"Total jobs to process: {len(jobs)} with {num_workers} workers.")
 
-        # The pool now just runs the jobs. No need to collect metadata here.
         try:
             with mp.Pool(processes=num_workers) as pool:
-                # Use tqdm for a progress bar
                 list(tqdm(pool.imap_unordered(worker, jobs), total=len(jobs), desc="Overall Progress"))
         except Exception as e:
             self.logger.error(f"A critical error occurred during multiprocessing: {e}")
@@ -289,46 +277,24 @@ class DataSetCreator:
 
         num_workers = self.cfg["num_workers"]
         
-        # The 'jobs' list will hold all the tasks for this specific SLURM job
         jobs = []
 
-        # The main loop now iterates over the range provided by the SLURM job
         for i in range(start, end + 1):
-            # Inside this loop, we iterate through each detector as before
             for detector_id in self.cfg["gain_library"].keys():
-                
-                # --- This is the key part ---
-                # For each index 'i' and each detector, add two jobs to the list:
-                # 1. An "event" exposure with injections.
-                # 2. A "baseline" exposure with NO injections.
-                
-                # The 'is_baseline' flag tells your worker function what to do.
-                # 'True' means create a baseline exposure.
                 jobs.append((self.config_path, detector_id, i, True)) 
-                
-                # 'False' means create an event exposure with injections.
                 jobs.append((self.config_path, detector_id, i, False))
 
         self.logger.info(f"Created {len(jobs)} total jobs for this worker to process.")
 
-        # Now, use the multiprocessing pool to execute all the jobs
         if num_workers > 1:
             with Pool(processes=num_workers) as pool:
-                # You'll need a worker function (like _process_single_exposure_wrapper)
-                # that can unpack the tuple of arguments.
                 pool.starmap(self._process_single_exposure_wrapper, jobs)
         else:
-            # For debugging without multiprocessing
             for job_args in jobs:
                 self._process_single_exposure_wrapper(*job_args)
                 
         self.logger.info(f"Finished processing all jobs for index range: {start} to {end}")
 
-    # You'll also need a small wrapper function if your worker function 
-    # doesn't already accept a tuple of arguments.
     def _process_single_exposure_wrapper(self, config_path, detector_id, index, is_baseline):
         """Helper function to unpack arguments for the multiprocessing pool."""
-        # Re-initialize the DataSetCreator or pass necessary components if needed
-        # This is important because multiprocessing creates new processes.
-        # A simpler approach might be to just call the processing method directly.
         self._process_single_exposure(detector_id, index, is_baseline)

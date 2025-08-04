@@ -56,6 +56,9 @@ gain_library: {
     '18283_EuclidFirmware': 1.776,
 }
 
+# Exposure time
+exp_time: 45000 # seconds
+
 # Saturated pixel 
 saturation_dn: 65535 # DN
 
