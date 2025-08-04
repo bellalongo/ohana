@@ -25,8 +25,9 @@ class DataLoader:
         if os.path.isdir(path):
             return self._load_from_tif_directory(path)
         elif os.path.isfile(path):
+            # --- THIS SECTION IS NOW CORRECTED ---
             if path.lower().endswith(('.fits', '.fit')):
-                return self._load_from_fits(path)
+                return self._load_from_mef_fits(path)
             elif path.lower().endswith('.h5'):
                 return self._load_from_h5(path)
             elif path.lower().endswith('.npy'):
@@ -36,25 +37,30 @@ class DataLoader:
         else:
             raise FileNotFoundError(f"The specified path does not exist: {path}")
 
-    def _load_from_fits(self, file_path: str) -> np.ndarray:
-        """Loads a data cube from a FITS file with robust error handling."""
-        print(f"Loading data from FITS file: {file_path}")
+    def _load_from_mef_fits(self, file_path: str) -> np.ndarray:
+        """
+        Loads a data cube from a multi-extension FITS (MEF) file where each
+        HDU contains a single frame.
+        """
+        print(f"Loading data from Multi-Extension FITS file: {file_path}")
         try:
             with fits.open(file_path) as hdul:
-                # Common practice: data is in primary HDU (0) or first extension (1)
-                data = hdul[0].data if hdul[0].data is not None else hdul[1].data
-            if data is None:
-                raise IOError("FITS file is valid, but no data was found in the primary or first extension HDU.")
-            return data.astype(np.float32)
+                # Skip the primary HDU (index 0) as it usually contains no image data
+                frame_list = [hdu.data.astype(np.float32) for hdu in tqdm(hdul[1:], desc="Loading FITS extensions")]
+            
+            if not frame_list:
+                raise IOError("FITS file is valid, but no data extensions were found after the primary HDU.")
+            
+            # Stack the list of 2D frames into a single 3D data cube
+            return np.stack(frame_list, axis=0)
+
         except Exception as e:
-            # This provides a much clearer error if astropy fails.
-            raise IOError(f"Astropy failed to open the FITS file '{file_path}'. Original error: {e}")
+            raise IOError(f"Astropy failed to open or process the FITS file '{file_path}'. Original error: {e}")
 
     def _load_from_h5(self, file_path: str) -> np.ndarray:
         """Loads a data cube from an HDF5 file."""
         print(f"Loading data from HDF5 file: {file_path}")
         with h5py.File(file_path, 'r') as hf:
-            # Assuming the data is stored in a dataset named 'data'
             if 'data' not in hf:
                 raise KeyError("HDF5 file must contain a dataset named 'data'.")
             return hf['data'][:].astype(np.float32)
