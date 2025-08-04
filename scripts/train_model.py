@@ -1,6 +1,7 @@
 import argparse
 import yaml
 import os
+import json
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -19,7 +20,7 @@ from ohana.training.dataset import OhanaDataset
 def train(model, device, train_loader, optimizer, loss_fn, epoch):
     """Training loop for one epoch."""
     model.train()
-    total_loss = 0
+    batch_losses = []
     pbar = tqdm(train_loader, desc=f"Epoch {epoch} [TRAIN]")
     for batch_idx, batch in enumerate(pbar):
         data, target = batch['patch'].to(device), batch['label'].to(device)
@@ -30,18 +31,18 @@ def train(model, device, train_loader, optimizer, loss_fn, epoch):
         loss.backward()
         optimizer.step()
         
-        total_loss += loss.item()
-        pbar.set_postfix(loss=f"{loss.item():.4f}")
+        loss_item = loss.item()
+        batch_losses.append(loss_item)
+        pbar.set_postfix(loss=f"{loss_item:.4f}")
         
-    avg_loss = total_loss / len(train_loader)
+    avg_loss = np.mean(batch_losses)
     print(f"Epoch {epoch} [TRAIN] Average Loss: {avg_loss:.4f}")
+    return batch_losses
 
 def validate(model, device, val_loader, loss_fn, class_map):
     """Validation loop that also returns predictions for confusion matrix."""
     model.eval()
-    val_loss = 0
-    correct = 0
-    total = 0
+    batch_losses = []
     all_targets = []
     all_predictions = []
     with torch.no_grad():
@@ -49,33 +50,32 @@ def validate(model, device, val_loader, loss_fn, class_map):
         for batch in pbar:
             data, target = batch['patch'].to(device), batch['label'].to(device)
             logits, _ = model(data)
-            val_loss += loss_fn(logits, target).item()
+            
+            loss = loss_fn(logits, target)
+            batch_losses.append(loss.item())
             
             _, predicted = torch.max(logits.data, 1)
-            total += target.size(0)
-            correct += (predicted == target).sum().item()
-            
             all_targets.extend(target.cpu().numpy())
             all_predictions.extend(predicted.cpu().numpy())
             
-            pbar.set_postfix(acc=f"{(100 * correct / total):.2f}%")
+            pbar.set_postfix(acc=f"{(100 * np.sum(np.array(all_predictions) == np.array(all_targets)) / len(all_targets)):.2f}%")
 
-    avg_loss = val_loss / len(val_loader)
-    accuracy = 100 * correct / total
+    avg_loss = np.mean(batch_losses)
+    accuracy = 100 * np.sum(np.array(all_predictions) == np.array(all_targets)) / len(all_targets)
     print(f"[VALIDATE] Average Loss: {avg_loss:.4f}, Accuracy: {accuracy:.2f}%")
     
     # --- Confusion Matrix Calculation ---
-    cm = confusion_matrix(all_targets, all_predictions)
+    cm = confusion_matrix(all_targets, all_predictions, labels=list(class_map.values()))
     class_names = list(class_map.keys())
-    print("Confusion Matrix:")
-    # Header
-    print(f"{'':<12} | " + ' '.join([f'{name:<12}' for name in class_names]))
-    print('-' * (15 * len(class_names)))
-    # Rows
+    print("Confusion Matrix (Predicted vs. True):")
+    header = f"{'':<12} | " + ' '.join([f'{name:<12}' for name in class_names])
+    print(header)
+    print('-' * len(header))
     for i, row in enumerate(cm):
-        print(f"{class_names[i]:<12} | " + ' '.join([f'{val:<12}' for val in row]))
+        row_str = f"{class_names[i]:<12} | " + ' '.join([f'{val:<12}' for val in row])
+        print(row_str)
 
-    return accuracy
+    return accuracy, batch_losses
 
 def main():
     parser = argparse.ArgumentParser(description="Train a CRNN+Attention model on ohana data.")
@@ -110,7 +110,6 @@ def main():
         print("Dataset is empty. Please generate data first using create_training_set.py")
         return
 
-    # Split dataset
     val_size = int(args.val_split * len(full_dataset))
     train_size = len(full_dataset) - val_size
     train_dataset, val_dataset = random_split(full_dataset, [train_size, val_size])
@@ -123,33 +122,36 @@ def main():
     print(f"Using batch size: {args.batch_size}")
 
     # --- Model, Loss, Optimizer ---
-    model = CRNNAttention(num_classes=len(full_dataset.class_map)).to(device)
-
+    model = CRNNAttention(num_classes=len(full_dataset.class_map))
     if torch.cuda.device_count() > 1:
         print(f"Let's use {torch.cuda.device_count()} GPUs!")
         model = nn.DataParallel(model)
-
     model.to(device)
-    print(model)
     
     class_weights = full_dataset.get_class_weights().to(device)
-    print(f"Using class weights: {class_weights}")
     loss_fn = nn.CrossEntropyLoss(weight=class_weights)
-    
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     # --- Training & Validation Loop ---
     best_accuracy = 0.0
+    history = {
+        "train_loss_per_batch": [],
+        "val_loss_per_batch": [],
+        "val_accuracy_per_epoch": []
+    }
+
     for epoch in range(1, args.epochs + 1):
-        train(model, device, train_loader, optimizer, loss_fn, epoch)
-        # Pass the class_map to the validate function
-        accuracy = validate(model, device, val_loader, loss_fn, full_dataset.class_map)
+        train_batch_losses = train(model, device, train_loader, optimizer, loss_fn, epoch)
+        accuracy, val_batch_losses = validate(model, device, val_loader, loss_fn, full_dataset.class_map)
+        
+        history["train_loss_per_batch"].extend(train_batch_losses)
+        history["val_loss_per_batch"].extend(val_batch_losses)
+        history["val_accuracy_per_epoch"].append(accuracy)
         
         if accuracy > best_accuracy:
             best_accuracy = accuracy
             model_save_path = os.path.join(args.output_dir, "best_model.pth")
             print(f"New best accuracy! Saving model to {model_save_path}")
-            # To save a model wrapped in DataParallel, we save the underlying module's state_dict
             if isinstance(model, nn.DataParallel):
                 torch.save(model.module.state_dict(), model_save_path)
             else:
@@ -157,6 +159,12 @@ def main():
             
     print("Training finished.")
     print(f"Best validation accuracy: {best_accuracy:.2f}%")
+
+    # --- Save Training History ---
+    history_path = os.path.join(args.output_dir, "training_history.json")
+    with open(history_path, 'w') as f:
+        json.dump(history, f, indent=4)
+    print(f"Training history saved to {history_path}")
 
 if __name__ == '__main__':
     main()
