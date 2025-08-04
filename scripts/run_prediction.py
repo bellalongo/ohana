@@ -2,6 +2,7 @@ import argparse
 import sys
 import os
 import time
+import json
 
 # Add the parent directory ('ohana-main') to the Python path
 # This allows the script to find and import the 'ohana' package
@@ -17,7 +18,7 @@ def main():
     parser.add_argument(
         "--exposure",
         required=True,
-        help="Path to the new exposure file to be analyzed (e.g., data.h5)."
+        help="Path to the new exposure file to be analyzed (e.g., data.h5, data.fits)."
     )
     parser.add_argument(
         "--model",
@@ -28,6 +29,10 @@ def main():
         "--config",
         required=True,
         help="Path to the training configuration YAML file (creator_config.yaml)."
+    )
+    parser.add_argument(
+        "--output",
+        help="Optional. Path to save the detection results as a JSON file."
     )
     args = parser.parse_args()
 
@@ -43,18 +48,24 @@ def main():
 
         # 3. Print the results in a user-friendly format
         if anomalies:
-            print(f"\nSuccess! Detected {len(anomalies)} anomalies:")
-            # Sort anomalies by type for cleaner output
+            print(f"\n✅ Success! Detected {len(anomalies)} anomalies:")
             anomalies.sort(key=lambda x: x['type'])
             for anomaly in anomalies:
                 loc = anomaly['location_px']
-                conf = anomaly['confidence'] * 100
+                conf = anomaly.get('confidence', -1) * 100
                 print(f"  - Type: {anomaly['type']:<12} | Location: (y={loc[0]}, x={loc[1]}) | Confidence: {conf:.2f}%")
         else:
-            print("\nSuccess! No anomalies were detected in the exposure.")
+            print("\n✅ Success! No anomalies were detected in the exposure.")
+
+        # 4. Save results to a file if an output path was provided
+        if args.output:
+            print(f"\nSaving results to {args.output}...")
+            with open(args.output, 'w') as f:
+                json.dump(anomalies, f, indent=4)
+            print("Save complete.")
 
     except Exception as e:
-        print(f"\nAn error occurred during prediction: {e}")
+        print(f"\n❌ An error occurred during prediction: {e}")
         sys.exit(1)
 
     end_time = time.time()
