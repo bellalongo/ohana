@@ -71,10 +71,9 @@ class OhanaDataset(Dataset):
                 
                 h5_path = os.path.join(self.data_dir, metadata["h5_file"])
                 if not os.path.exists(h5_path):
-                    logger.warning(f"HDF5 file {h5_path} not found for metadata {meta_file}. Skipping.")
+                    logger.warning(f"HDF5 file {h5_path} not found for metadata {meta_file}. Skipping exposure.")
                     continue
 
-                # Create a quick lookup for anomaly locations
                 anomalies = []
                 if metadata["parameters"]["injected_events"]["details"]:
                     for event in metadata["parameters"]["injected_events"]["details"]:
@@ -84,22 +83,18 @@ class OhanaDataset(Dataset):
                             "pos": tuple(event[pos_key])
                         })
 
-                # For each patch, determine its label
                 for patch_info in metadata["patch_info"]["patches"]:
                     patch_id = patch_info["id"]
-                    patch_coords = tuple(patch_info["coords"]) # (top, left)
+                    patch_coords = tuple(patch_info["coords"])
                     
-                    label = "background" # Default label
-                    
-                    # Check if any anomaly falls within this patch
+                    label = "background"
                     for anomaly in anomalies:
                         ay, ax = anomaly["pos"]
                         py, px = patch_coords
                         ph, pw = self.patch_size
-                        
                         if (py <= ay < py + ph) and (px <= ax < px + pw):
                             label = anomaly["type"]
-                            break # Label with the first anomaly found
+                            break
                     
                     self.samples.append({
                         "h5_path": h5_path,
@@ -115,6 +110,7 @@ class OhanaDataset(Dataset):
     def __getitem__(self, idx):
         """
         Fetches a single labeled patch from the dataset.
+        Includes error handling for missing files.
         """
         if torch.is_tensor(idx):
             idx = idx.tolist()
@@ -124,13 +120,19 @@ class OhanaDataset(Dataset):
         patch_id = sample_info["patch_id"]
         label = sample_info["label"]
 
-        with h5py.File(h5_path, 'r') as hf:
-            patch_data = hf[patch_id][:] # Reads the data into memory
+        try:
+            with h5py.File(h5_path, 'r') as hf:
+                patch_data = hf[patch_id][:]
+        except (FileNotFoundError, KeyError) as e:
+            # **FIX APPLIED HERE**
+            # If a file or patch is missing, log a warning and return the next sample.
+            # This prevents the training job from crashing.
+            logger.warning(f"Could not load patch {patch_id} from {h5_path}. Error: {e}. Skipping.")
+            # Recursively call __getitem__ with the next index
+            return self.__getitem__((idx + 1) % len(self))
 
-        # Ensure data is in (T, H, W) format and float32
         patch_tensor = torch.from_numpy(patch_data.astype(np.float32))
         label_tensor = torch.tensor(label, dtype=torch.long)
-
         sample = {"patch": patch_tensor, "label": label_tensor}
 
         if self.transform:
@@ -141,22 +143,15 @@ class OhanaDataset(Dataset):
     def get_class_weights(self):
         """
         Computes class weights for handling class imbalance.
-        Should be used with a weighted loss function.
-        
-        Returns:
-            torch.Tensor: A tensor of weights for each class.
         """
         class_counts = np.zeros(len(self.class_map))
         for sample in self.samples:
             class_counts[sample["label"]] += 1
         
-        total_samples = len(self.samples)
+        # Avoid division by zero for classes that are not present
+        class_counts[class_counts == 0] = 1
         
-        # weight = total_samples / (num_classes * count)
+        total_samples = float(sum(class_counts))
         weights = total_samples / (len(self.class_map) * class_counts)
-        
-        # Handle cases where a class might not be present
-        weights[np.isinf(weights)] = 0
-        
         return torch.from_numpy(weights.astype(np.float32))
 
