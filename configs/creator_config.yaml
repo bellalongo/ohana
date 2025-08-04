@@ -25,6 +25,9 @@ num_baseline_exposures: 1 # CHANGE ME
 # Kind of event in the data (cosmic_ray, snowball, rtn, all)
 injection_type: "all"
 
+# Number of anomally classes the model is looking for 
+num_classes: 4
+
 # Number of cosmic rays per expsoure range
 cosmic_ray_per_exp_range: [100, 4000]
 

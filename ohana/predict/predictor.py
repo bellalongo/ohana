@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import yaml
 import h5py # Assuming your new data might be in HDF5 format
-# from ohana.models import YourCNN # IMPORTANT: You'll need to import your model's class definition
+from ohana.models import CRNNAttention # IMPORTANT: You'll need to import your model's class definition
 
 class Predictor:
     """
@@ -42,7 +42,10 @@ class Predictor:
         # You must instantiate your model architecture here before loading the weights.
         # Replace 'YourCNN' with the actual class name of your neural network.
         # model = YourCNN(input_channels=self.cfg['num_frames'] - 1) # Example instantiation
-        model = None # Placeholder
+        num_input_channels = self.cfg['num_frames'] - 1
+        num_classes = self.cfg['num_classes']
+
+        model = CRNNAttention(input_channels=num_input_channels, num_classes=num_classes)
         if model is None:
             raise NotImplementedError("You must instantiate your model architecture in _load_model().")
         
