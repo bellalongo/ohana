@@ -15,7 +15,6 @@ def main():
     parser.add_argument("--model", required=True, help="Path to the trained PyTorch model file (.pth).")
     parser.add_argument("--config", required=True, help="Path to the training configuration YAML file.")
     parser.add_argument("--output", required=True, help="Path to save the detection results as a JSON file.")
-    # --- NEW ARGUMENT ---
     parser.add_argument(
         "--save_processed_data",
         help="Optional. Path to save the corrected and differenced data cube as an .npy file for faster visualization."
