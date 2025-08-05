@@ -15,8 +15,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from ohana.models.unet_3d import UNet3D
 from ohana.training.dataset import OhanaDataset
-# UPDATED: Import from torch.amp instead of torch.cuda.amp
-from torch.amp import GradScaler, autocast
+# Use the older, compatible AMP syntax to avoid TypeError
+from torch.cuda.amp import GradScaler, autocast
 
 def train(model, device, train_loader, optimizer, loss_fn, epoch, scaler):
     model.train()
@@ -26,7 +26,7 @@ def train(model, device, train_loader, optimizer, loss_fn, epoch, scaler):
         data, target_mask = batch['patch'].to(device), batch['mask'].to(device)
         optimizer.zero_grad(set_to_none=True)
         
-        # UPDATED: Use modern autocast call
+        # Use older autocast syntax
         with autocast():
             output_logits = model(data)
             T_out = output_logits.shape[2]
@@ -35,8 +35,8 @@ def train(model, device, train_loader, optimizer, loss_fn, epoch, scaler):
 
         scaler.scale(loss).backward()
         
-        # NEW: Add gradient clipping to prevent exploding gradients and NaN loss
-        scaler.unscale_(optimizer) # Unscales the gradients of optimizer's assigned params
+        # Add gradient clipping to prevent exploding gradients and NaN loss
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         
         scaler.step(optimizer)
@@ -59,8 +59,8 @@ def validate(model, device, val_loader, loss_fn):
         for batch in pbar:
             data, target_mask = batch['patch'].to(device), batch['mask'].to(device)
             
-            # UPDATED: Use modern autocast call
-            with autocast(device_type=device.type, dtype=torch.float16):
+            # Use older autocast syntax
+            with autocast():
                 output_logits = model(data)
                 T_out = output_logits.shape[2]
                 central_frame_logits = output_logits[:, :, T_out // 2, :, :]
@@ -118,7 +118,7 @@ def main():
     loss_fn = nn.CrossEntropyLoss(ignore_index=0) 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     
-    # UPDATED: Use modern GradScaler call
+    # Use older GradScaler syntax
     scaler = GradScaler()
 
     best_val_accuracy = 0.0
