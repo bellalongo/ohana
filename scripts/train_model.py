@@ -14,7 +14,6 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from ohana.models.unet_3d import UNet3D
 from ohana.training.dataset import OhanaDataset
-# Use the older, compatible AMP syntax to avoid TypeError
 from torch.cuda.amp import GradScaler, autocast
 
 def train(model, device, train_loader, optimizer, loss_fn, epoch, scaler):
@@ -24,11 +23,15 @@ def train(model, device, train_loader, optimizer, loss_fn, epoch, scaler):
     for batch in pbar:
         data, target_mask = batch['patch'].to(device), batch['mask'].to(device)
         
-        # NEW: Add data normalization to stabilize training
-        # This is the key fix for the 'NaN' loss issue.
-        mean = data.mean(dim=(-1, -2, -3), keepdim=True)
-        std = data.std(dim=(-1, -2, -3), keepdim=True)
-        data = (data - mean) / (std + 1e-6) # Add epsilon to avoid division by zero
+        # --- NEW: More robust min-max normalization ---
+        # This scales each patch in the batch to the range [0, 1]
+        b, c, t, h, w = data.shape
+        data_flat = data.view(b, -1)
+        min_val = data_flat.min(dim=1, keepdim=True)[0]
+        max_val = data_flat.max(dim=1, keepdim=True)[0]
+        # Add epsilon to the denominator to prevent division by zero for flat patches
+        data_flat = (data_flat - min_val) / (max_val - min_val + 1e-6)
+        data = data_flat.view(b, c, t, h, w)
         
         optimizer.zero_grad(set_to_none=True)
         
@@ -46,16 +49,14 @@ def train(model, device, train_loader, optimizer, loss_fn, epoch, scaler):
         scaler.step(optimizer)
         scaler.update()
         
-        # Check if the loss is NaN and handle it
         loss_item = loss.item()
         if np.isnan(loss_item):
-            print(f"\nWarning: NaN loss detected at epoch {epoch}, batch. Skipping update.")
-            continue # Skip this batch if loss is NaN
+            continue
             
         batch_losses.append(loss_item)
         pbar.set_postfix(loss=f"{loss_item:.4f}")
         
-    avg_loss = np.mean(batch_losses)
+    avg_loss = np.mean(batch_losses) if batch_losses else float('nan')
     print(f"Epoch {epoch} [TRAIN] Average Loss: {avg_loss:.4f}")
 
 def validate(model, device, val_loader, loss_fn):
@@ -69,10 +70,13 @@ def validate(model, device, val_loader, loss_fn):
         for batch in pbar:
             data, target_mask = batch['patch'].to(device), batch['mask'].to(device)
             
-            # NEW: Add data normalization here as well for consistency
-            mean = data.mean(dim=(-1, -2, -3), keepdim=True)
-            std = data.std(dim=(-1, -2, -3), keepdim=True)
-            data = (data - mean) / (std + 1e-6)
+            # --- NEW: Add min-max normalization here as well ---
+            b, c, t, h, w = data.shape
+            data_flat = data.view(b, -1)
+            min_val = data_flat.min(dim=1, keepdim=True)[0]
+            max_val = data_flat.max(dim=1, keepdim=True)[0]
+            data_flat = (data_flat - min_val) / (max_val - min_val + 1e-6)
+            data = data_flat.view(b, c, t, h, w)
             
             with autocast():
                 output_logits = model(data)

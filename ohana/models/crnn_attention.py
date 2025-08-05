@@ -5,7 +5,6 @@ import torch.nn.functional as F
 class Attention(nn.Module):
     """
         Temporal Attention mechanism
-
     """
     def __init__(self, hidden_size):
         """
