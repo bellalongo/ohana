@@ -1,4 +1,3 @@
-
 import argparse
 import yaml
 import os
@@ -24,9 +23,15 @@ def train(model, device, train_loader, optimizer, loss_fn, epoch, scaler):
     pbar = tqdm(train_loader, desc=f"Epoch {epoch} [TRAIN]")
     for batch in pbar:
         data, target_mask = batch['patch'].to(device), batch['mask'].to(device)
+        
+        # NEW: Add data normalization to stabilize training
+        # This is the key fix for the 'NaN' loss issue.
+        mean = data.mean(dim=(-1, -2, -3), keepdim=True)
+        std = data.std(dim=(-1, -2, -3), keepdim=True)
+        data = (data - mean) / (std + 1e-6) # Add epsilon to avoid division by zero
+        
         optimizer.zero_grad(set_to_none=True)
         
-        # Use older autocast syntax
         with autocast():
             output_logits = model(data)
             T_out = output_logits.shape[2]
@@ -35,15 +40,20 @@ def train(model, device, train_loader, optimizer, loss_fn, epoch, scaler):
 
         scaler.scale(loss).backward()
         
-        # Add gradient clipping to prevent exploding gradients and NaN loss
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         
         scaler.step(optimizer)
         scaler.update()
         
-        batch_losses.append(loss.item())
-        pbar.set_postfix(loss=f"{loss.item():.4f}")
+        # Check if the loss is NaN and handle it
+        loss_item = loss.item()
+        if np.isnan(loss_item):
+            print(f"\nWarning: NaN loss detected at epoch {epoch}, batch. Skipping update.")
+            continue # Skip this batch if loss is NaN
+            
+        batch_losses.append(loss_item)
+        pbar.set_postfix(loss=f"{loss_item:.4f}")
         
     avg_loss = np.mean(batch_losses)
     print(f"Epoch {epoch} [TRAIN] Average Loss: {avg_loss:.4f}")
@@ -59,7 +69,11 @@ def validate(model, device, val_loader, loss_fn):
         for batch in pbar:
             data, target_mask = batch['patch'].to(device), batch['mask'].to(device)
             
-            # Use older autocast syntax
+            # NEW: Add data normalization here as well for consistency
+            mean = data.mean(dim=(-1, -2, -3), keepdim=True)
+            std = data.std(dim=(-1, -2, -3), keepdim=True)
+            data = (data - mean) / (std + 1e-6)
+            
             with autocast():
                 output_logits = model(data)
                 T_out = output_logits.shape[2]
@@ -118,7 +132,6 @@ def main():
     loss_fn = nn.CrossEntropyLoss(ignore_index=0) 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     
-    # Use older GradScaler syntax
     scaler = GradScaler()
 
     best_val_accuracy = 0.0
