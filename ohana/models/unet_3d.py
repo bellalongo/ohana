@@ -118,6 +118,11 @@ class Up3D(nn.Module):
     def forward(self, x1, x2):
         """
             Upsample x1, add padding to patch x2, concat, and then finally convolve
+            Arguments:
+                x1 (torch.Tensor): decoder feature map to upsample (N, C1, T1, H1, W1)
+                x2 (torch.Tensor): skip connection feature map from encoder (N, C2, T2, H2, W2)
+            Returns:
+                torch.Tensor: Output tensor of shape roughly
         """
         # Upsample decoder feature by 2x for T, H, W
         x1 = self.up(x1)
@@ -254,16 +259,38 @@ class UNet3D(nn.Module):
             Arguments:
                 x (torch.Tensor): input tensor of shape (N, C_in, T, H, W)
             Returns: 
-                
+                torch.Tensor: output tensor of shape (N, C_out, T, H, W) duh
         """
+        """Encoder: compute and store skip features"""
+        # Skip 1: (N, 32,, T, H, W)
         x1 = self.inc(x)
+
+        # Skip 2: (N, 64, T/2, H/2, W/2)
         x2 = self.down1(x1)
+
+        # Skip 3: (N, 128, T/4, H/4, W/4)
         x3 = self.down2(x2)
+
+        # Skip 4: (N, 256, T/16, H/16, W/16)
         x4 = self.down3(x3)
+
+        # Skip 4: (N, 512 // factor, T/16, H/16, W/16)
         x5 = self.down4(x4)
+
+        """Decoder: upsample and fuse w/ the encoder skip features"""
+        # Upsample 1: (N, 256 // factor, T/8, H/8, W/8)
         x = self.up1(x5, x4)
+
+        # Upsample 2: (N, 128 // factor, T/4, H/4, W/4)
         x = self.up2(x, x3)
+
+        # Upsample 3: (N, 64 // factor, T/2, H/2, W/2)
         x = self.up3(x, x2)
+
+        # Upsample 4: (N, 32, T, H, W)
         x = self.up4(x, x1)
+
+        # Output are the per-pixel/per-time step prediction
         logits = self.outc(x)
+
         return logits
