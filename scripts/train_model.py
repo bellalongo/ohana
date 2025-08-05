@@ -15,7 +15,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 
 from ohana.models.unet_3d import UNet3D
 from ohana.training.dataset import OhanaDataset
-from torch.cuda.amp import GradScaler, autocast
+# UPDATED: Import from torch.amp instead of torch.cuda.amp
+from torch.amp import GradScaler, autocast
 
 def train(model, device, train_loader, optimizer, loss_fn, epoch, scaler):
     model.train()
@@ -23,24 +24,31 @@ def train(model, device, train_loader, optimizer, loss_fn, epoch, scaler):
     pbar = tqdm(train_loader, desc=f"Epoch {epoch} [TRAIN]")
     for batch in pbar:
         data, target_mask = batch['patch'].to(device), batch['mask'].to(device)
-        optimizer.zero_grad(set_to_none=True) # More efficient
-        with autocast():
+        optimizer.zero_grad(set_to_none=True)
+        
+        # UPDATED: Use modern autocast call
+        with autocast(device_type=device.type, dtype=torch.float16):
             output_logits = model(data)
             T_out = output_logits.shape[2]
             central_frame_logits = output_logits[:, :, T_out // 2, :, :]
             loss = loss_fn(central_frame_logits, target_mask)
+
         scaler.scale(loss).backward()
+        
+        # NEW: Add gradient clipping to prevent exploding gradients and NaN loss
+        scaler.unscale_(optimizer) # Unscales the gradients of optimizer's assigned params
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
         scaler.step(optimizer)
         scaler.update()
+        
         batch_losses.append(loss.item())
         pbar.set_postfix(loss=f"{loss.item():.4f}")
+        
     avg_loss = np.mean(batch_losses)
     print(f"Epoch {epoch} [TRAIN] Average Loss: {avg_loss:.4f}")
 
 def validate(model, device, val_loader, loss_fn):
-    """
-    Validation loop that now calculates loss and anomaly-only pixel accuracy.
-    """
     model.eval()
     total_loss = 0
     total_anomaly_pixels = 0
@@ -51,45 +59,33 @@ def validate(model, device, val_loader, loss_fn):
         for batch in pbar:
             data, target_mask = batch['patch'].to(device), batch['mask'].to(device)
             
-            with autocast():
+            # UPDATED: Use modern autocast call
+            with autocast(device_type=device.type, dtype=torch.float16):
                 output_logits = model(data)
                 T_out = output_logits.shape[2]
                 central_frame_logits = output_logits[:, :, T_out // 2, :, :]
                 loss = loss_fn(central_frame_logits, target_mask)
-            
+                
             total_loss += loss.item()
-            
-            # --- NEW: Calculate Anomaly-Only Accuracy ---
-            # Get the predicted class for each pixel
             preds = torch.argmax(central_frame_logits, dim=1)
-            
-            # Create a mask for only the pixels that are true anomalies (not background)
             anomaly_mask = target_mask > 0
-            
-            # Count the number of true anomaly pixels in this batch
             total_anomaly_pixels += anomaly_mask.sum().item()
-            
-            # Count how many of those anomaly pixels were correctly predicted
             correct_anomaly_pixels += (preds[anomaly_mask] == target_mask[anomaly_mask]).sum().item()
 
     avg_loss = total_loss / len(val_loader)
-    # Avoid division by zero if there are no anomalies in the validation set
     anomaly_accuracy = (correct_anomaly_pixels / total_anomaly_pixels * 100) if total_anomaly_pixels > 0 else 0
     
     print(f"[VALIDATE] Average Loss: {avg_loss:.4f}, Anomaly Pixel Accuracy: {anomaly_accuracy:.2f}%")
-    
-    # We want to maximize accuracy, but loss is also a good metric to track
     return avg_loss, anomaly_accuracy
-
 
 def main():
     parser = argparse.ArgumentParser(description="Train a 3D U-Net model on ohana data.")
     parser.add_argument('--config', type=str, required=True, help='Path to the creator config YAML file.')
     parser.add_argument('--epochs', type=int, default=20, help='Number of epochs to train.')
-    parser.add_argument('--batch_size', type=int, default=2, help='Batch size for 3D training (use a smaller size).')
+    parser.add_argument('--batch_size', type=int, default=2, help='Batch size for 3D training.')
     parser.add_argument('--lr', type=float, default=1e-4, help='Learning rate.')
-    parser.add_argument('--val_split', type=float, default=0.2, help='Fraction of data to use for validation.')
-    parser.add_argument('--output_dir', type=str, default='./trained_models', help='Directory to save trained models.')
+    parser.add_argument('--val_split', type=float, default=0.2, help='Fraction of data for validation.')
+    parser.add_argument('--output_dir', type=str, default='./trained_models', help='Directory to save models.')
     args = parser.parse_args()
 
     with open(args.config, 'r') as f:
@@ -121,7 +117,9 @@ def main():
     
     loss_fn = nn.CrossEntropyLoss(ignore_index=0) 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    scaler = GradScaler()
+    
+    # UPDATED: Use modern GradScaler call
+    scaler = GradScaler(device_type=device.type)
 
     best_val_accuracy = 0.0
     
@@ -132,8 +130,7 @@ def main():
         if val_accuracy > best_val_accuracy:
             best_val_accuracy = val_accuracy
             model_save_path = os.path.join(args.output_dir, "best_model_unet3d.pth")
-            print(f"New best validation accuracy: {best_val_accuracy:.2f}%. Saving model to {model_save_path}")
-            # Save the model's state_dict, handling DataParallel if necessary
+            print(f"New best validation accuracy: {best_val_accuracy:.2f}%. Saving model...")
             if isinstance(model, nn.DataParallel):
                 torch.save(model.module.state_dict(), model_save_path)
             else:
