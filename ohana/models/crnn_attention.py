@@ -4,13 +4,16 @@ import torch.nn.functional as F
 
 class Attention(nn.Module):
     """
-        Temporal Attention mechanism.
-        
-        This module learns to assign different weights to the LSTM's output at each
-        time step, allowing the model to focus on the most relevant frames for
-        classification.
+        Temporal Attention mechanism
+
     """
     def __init__(self, hidden_size):
+        """
+            Module learns to assign different weights to the LSTM's output at each
+            time step, making it focus on the most relevant parts
+            Attributes:
+                hidden_size ()
+        """
         super(Attention, self).__init__()
         self.attention_net = nn.Linear(hidden_size, hidden_size)
         self.context_vector = nn.Linear(hidden_size, 1, bias=False)
