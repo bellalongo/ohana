@@ -27,7 +27,7 @@ def train(model, device, train_loader, optimizer, loss_fn, epoch, scaler):
         optimizer.zero_grad(set_to_none=True)
         
         # UPDATED: Use modern autocast call
-        with autocast(device_type=device.type, dtype=torch.float16):
+        with autocast():
             output_logits = model(data)
             T_out = output_logits.shape[2]
             central_frame_logits = output_logits[:, :, T_out // 2, :, :]
@@ -119,7 +119,7 @@ def main():
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     
     # UPDATED: Use modern GradScaler call
-    scaler = GradScaler(device_type=device.type)
+    scaler = GradScaler()
 
     best_val_accuracy = 0.0
     
