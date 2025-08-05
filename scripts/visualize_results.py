@@ -30,7 +30,12 @@ def main():
     parser.add_argument(
         "--output_dir",
         required=True,
-        help="Directory where the output plot images will be saved."
+        help="Directory where the final summary plot image will be saved."
+    )
+    parser.add_argument(
+        "--no_interactive",
+        action='store_true',
+        help="If set, skips the interactive one-by-one plotting and only saves the final summary plot."
     )
     args = parser.parse_args()
 
@@ -41,13 +46,20 @@ def main():
         # 1. Initialize the visualizer with the path to the original data
         visualizer = ResultVisualizer(exposure_path=args.exposure)
 
-        # 2. Generate and save plots for all detections found in the results file
-        visualizer.plot_all_detections(results_path=args.results, output_dir=args.output_dir)
+        # 2. Load the detection results from the JSON file
+        visualizer.load_results(results_path=args.results)
 
-        print(f"\nVisualization complete. Plots are saved in '{args.output_dir}'.")
+        # 3. Show individual plots interactively, unless disabled
+        if not args.no_interactive:
+            visualizer.show_individual_detections()
+
+        # 4. Generate and save the final summary plot
+        visualizer.save_summary_plot(output_dir=args.output_dir)
+
+        print(f"\n✅ Visualization complete.")
 
     except Exception as e:
-        print(f"\nAn error occurred during visualization: {e}")
+        print(f"\n❌ An error occurred during visualization: {e}")
         sys.exit(1)
 
     end_time = time.time()
