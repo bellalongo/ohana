@@ -77,7 +77,7 @@ class ResultVisualizer:
             fig.colorbar(im, ax=ax1, label='Signal (DN)')
 
             # Subplot 2: Temporal View (Time Series)
-            ax2.plot(time_axis, pixel_time_series, marker='.', linestyle='-', color=sns.color_palette('Blues', 6)[4])
+            ax2.plot(time_axis, pixel_time_series, color=sns.color_palette('Blues', 6)[4])
             ax2.set_title(f"Time Series for Pixel ({y},{x})")
             ax2.set_xlabel("Frame Number (Difference)")
             ax2.set_ylabel("Signal (DN)")
