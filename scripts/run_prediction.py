@@ -1,4 +1,3 @@
-
 import argparse
 import sys
 import os
@@ -15,61 +14,60 @@ def main():
     )
 
     parser.add_argument(
-        "--exposure", 
-        required=True, 
+        "--exposure",
+        required=True,
         help="Path to the new exposure file or directory."
     )
-
     parser.add_argument(
-        "--model", 
-        required=True, 
+        "--model",
+        required=True,
         help="Path to the trained U-Net model file (.pth)."
     )
-
-    parser.add_argument("--config", 
-                        required=True, 
-                        help="Path to the training configuration YAML file."
+    parser.add_argument(
+        "--config",
+        required=True,
+        help="Path to the training configuration YAML file."
     )
-
-    parser.add_argument("--output_json", 
-                        required=True, 
-                        help="Path to save the detection results (list of anomalies)."
+    parser.add_argument(
+        "--output_json",
+        required=True,
+        help="Path to save the detection results (list of anomalies)."
     )
-
-    parser.add_argument("--output_mask", 
-                        required=True, 
-                        help="Path to save the full predicted segmentation mask as an .npy file."
+    parser.add_argument(
+        "--output_mask",
+        required=True,
+        help="Path to save the full predicted segmentation mask as an .npy file."
+    )
+    # --- NEW ARGUMENT ---
+    parser.add_argument(
+        "--output_processed_data",
+        required=True,
+        help="Path to save the preprocessed data cube as an .npy file."
     )
 
     args = parser.parse_args()
 
-    # Grab the start time
     start_time = time.time()
-
-    # Try to run the prediction
     try:
-        # Grab predictor class instance
         predictor = Predictor(model_path=args.model, config_path=args.config)
-
-        # Grab the anomalues
         anomalies = predictor.predict(exposure_path=args.exposure)
 
-        # Log 
         print(f"\nSaving {len(anomalies)} detected anomalies to {args.output_json}...")
-
-        # Dump the anomaly details into a json
         with open(args.output_json, 'w') as f:
             json.dump(anomalies, f, indent=4)
 
-        # Log
         print(f"Saving full prediction mask to {args.output_mask}...")
-
-        # Check if there is a prediction mask
         if predictor.prediction_mask is not None:
-            # Save the mask
             np.save(args.output_mask, predictor.prediction_mask)
         else:
             print("Warning: No prediction mask was generated to save.")
+
+        # --- NEW LOGIC TO SAVE THE PROCESSED CUBE ---
+        print(f"Saving processed data cube to {args.output_processed_data}...")
+        if predictor.processed_cube is not None:
+            np.save(args.output_processed_data, predictor.processed_cube)
+        else:
+            print("Warning: No processed data cube was generated to save.")
 
     except Exception as e:
         print(f"\nAn error occurred during prediction: {e}")

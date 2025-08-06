@@ -219,5 +219,10 @@ slurms
 configs/secret_creator_config.yaml
 configs/secret_model_config.yaml
 
-trained_models
+plots
 
+exposure_data.npy
+
+old_results.json
+
+results.json
