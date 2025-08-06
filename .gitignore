@@ -226,3 +226,9 @@ exposure_data.npy
 old_results.json
 
 results.json
+
+docs/processed_exposure.npy
+
+docs/prediction_outputs
+
+docs/tut_prediction_outputs

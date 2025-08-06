@@ -1,4 +1,5 @@
 import numpy as np
+from os.path import exists
 
 # Import the new, dedicated corrector class
 from .reference_pixel_corrector import ReferencePixelCorrector
@@ -23,18 +24,26 @@ class Preprocessor:
         
         print(f"Preprocessor initialized. Reference pixel correction: {'Enabled' if perform_ref_correction else 'Disabled'}.")
 
-    def process_exposure(self, raw_exposure_cube: np.ndarray) -> np.ndarray:
+    def process_exposure(self, raw_exposure_cube: np.ndarray,
+                         save_path: str) -> np.ndarray:
         """
         Applies all preprocessing steps to a raw data cube.
 
         Args:
             raw_exposure_cube (np.ndarray): The input data cube 
                                             (frames, height, width).
+            save_path (str): place where the processed exposure will be saved to 
+                as a npy
 
         Returns:
             np.ndarray: The processed data, ready for patching and prediction.
                         Typically this is the difference image cube.
         """
+        # Check if file exists already
+        if exists(save_path):
+            print(f"Found existing processed file. Loading from: {save_path}")
+            return np.load(save_path)
+
         if raw_exposure_cube.ndim != 3 or raw_exposure_cube.shape[0] < 2:
             raise ValueError("Input for preprocessing must be a 3D cube with at least 2 frames.")
 
@@ -54,5 +63,7 @@ class Preprocessor:
         reference_frame = current_cube[0]
         diff_image_cube = current_cube[1:] - reference_frame
         print(f"Created difference image cube with shape: {diff_image_cube.shape}")
+
+        np.save(save_path, diff_image_cube)
 
         return diff_image_cube

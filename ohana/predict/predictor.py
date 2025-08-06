@@ -178,7 +178,7 @@ class Predictor:
 
         return detections
 
-    def predict(self, exposure_path: str) -> list:
+    def predict(self, exposure_path: str, processed_exposure_file: str) -> list:
         """
             Run the prediction on a single exposure
             Arguments:
@@ -193,7 +193,7 @@ class Predictor:
         raw_exposure = self.data_loader.load_exposure(exposure_path)
 
         # Preprorcess the exposure into a numpy array (T, H, W)
-        self.processed_cube = self.preprocessor.process_exposure(raw_exposure)
+        self.processed_cube = self.preprocessor.process_exposure(raw_exposure, processed_exposure_file)
 
         # Extract the overlapping patches of the exposure
         patches = self._extract_patches(self.processed_cube)
@@ -211,7 +211,7 @@ class Predictor:
             b, c_in, t, h, w = input_tensor.shape
 
             # Flatten the tensor without the batch
-            tensor_flat = input_tensor.view(b, -1)
+            tensor_flat = input_tensor.reshape(b, -1)
 
             # Grab the per sample min
             min_val = tensor_flat.min(dim=1, keepdim=True)[0]
