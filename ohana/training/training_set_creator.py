@@ -16,31 +16,85 @@ from ohana.training.injections import (
     inject_snowball,
 )
 
-# --- Multiprocessing Worker Function ---
+
 def worker(args):
     """
-    Worker function for the multiprocessing pool. It initializes a DataSetCreator
-    instance and calls the processing method for a single exposure.
+        Intializes a fresh DataSetCreator so the process has its own config and logger
+        then reruns the per exposure pipeline
+        Arguments:
+            args (tuple[str, str, int, bool]): packed tuple containing:
+                config_path (str): path to the yaml configuration
+                detector_id (str): key into cfg['gain_library']
+                index (int): exposure index (used in filenames/metadata)
+                inject_events (bool): if True: inject anomalies; False: baseline only
+        Returns:
+            None
     """
+    # Unpack the argument tuple from Pool.imap or map
     config_path, detector_id, index, inject_events = args
+
+    # Create a new creator per process
     creator = DataSetCreator(config_path)
-    # The worker now handles saving its own metadata file and doesn't return it.
+
+    # Run the single exposure sim
     creator._process_single_exposure(detector_id, index, inject_events)
 
 
 class DataSetCreator:
-    """Generate synthetic detector data, inject events, and create patched datasets."""
+    """
+        Generate synthetic detector data, inject events, tile into patches, and save by
+        reading the config params, creating the up the ramp data cubes per exposure,
+        injecting the events, and saving the datacube to a hdf5
+    """
 
     def __init__(self, config_path: str):
-        """Initializes the creator with configuration from a YAML file."""
+        """
+            Arguments:
+                config_path (str): path to a YAML file with keys including
+                    output_dir (str)
+                    image_shape (List[int, int])
+                    num_frames (int)
+                    saturation_dn (float)
+                    patch_size (List[int, int])
+                    overlap (int)
+                    num_exposure_events (int)
+                    num_baseline_exposures (int)
+                    num_workers (int)
+                    gain_library (Dict[str, float])
+                    dark_current_range (List[float, float])
+                    read_noise_range (List[float, float])
+                    gaussian_noise_range (List[float, float])
+                    cosmic_ray_per_exp_range (List[int, int])
+                    cosmic_ray_charge_range (List[float, float])
+                    snowballs_per_exp_range (List[int, int])
+                    snowball_radius_range (List[float, float])
+                    snowball_halo_amplitude_ratio_range (List[float, float])
+                    snowball_halo_decay_scale_range (List[float, float])
+                    rtn_per_exp_range (List[int, int])
+                    rtn_offset_range (List[float, float])
+                    rtn_period_range (List[float, float])  # frames
+                    rtn_duty_fraction_range (List[float, float])
+            Attributes:
+                config_path (str): stored config file path
+                cfg (dict[str, Any]): parsed YAML configuration dictionary
+                output_dir (str): base folder for patches and metadata
+                logger (logging.Logger): per-process logger writing to file + console
+        """
+        # Grab the config path
         self.config_path = config_path
+
+        # Open the config file
         with open(config_path, "r") as f:
+            # Save its contents
             self.cfg = yaml.safe_load(f)
 
+        # Have outpit directory be the one from the config
         self.output_dir = self.cfg["output_dir"]
+
+        # Make the output directory if it doesnt exist
         os.makedirs(self.output_dir, exist_ok=True)
         
-        # --- Set up logging ---
+        # Set up the logger (nothing import here, not my code)
         self.logger = logging.getLogger(f"DataSetCreator_{os.getpid()}")
         if not self.logger.handlers:
             self.logger.setLevel(logging.INFO)
@@ -54,140 +108,239 @@ class DataSetCreator:
 
     def _extract_patches(self, volume: np.ndarray):
         """
-        Extracts overlapping patches from a 3D data volume (T, H, W).
+            Create a 2D data cube (T, H, W) with overlapping patches across H x W by
+            using a sliding window with a stride of the overlap, and then extracting 
+            the sub-volumes of the patch of each top-left coord of the patch
+            Arguments:
+                volume (np.ndarray): input cube with shape (T, H, W)
+            Returns:
+                list[tuple[np.ndarray, tuple[int, int]]]: list of (patch, (row, col))
         """
+        # Unpack the spatial dimensions 
         _, H, W = volume.shape
-        ph, pw = self.cfg["patch_size"]
-        overlap = self.cfg["overlap"]
-        step_h, step_w = ph - overlap, pw - overlap
 
+        # Grab the patch width windoew size from the config
+        patch_height, patch_width = self.cfg["patch_size"]
+
+        # Grab the patch overlap from the config
+        overlap = self.cfg["overlap"]
+
+        # Creat the strides from the patch details and the overlap
+        step_h, step_w = patch_height - overlap, patch_width - overlap
+
+        # Initialize patches lists
         patches = []
-        for i in range(0, H - ph + 1, step_h):
-            for j in range(0, W - pw + 1, step_w):
-                patch = volume[:, i : i + ph, j : j + pw]
+
+        # Iterate through all heights (sliding window pt 1)
+        for i in range(0, H - patch_height + 1, step_h):
+            # Iterate through all widths (sliding window pt 2)
+            for j in range(0, W - patch_width + 1, step_w):
+                # Create the patch from the sliding window
+                patch = volume[:, i : i + patch_height, j : j + patch_width]
+
+                # Save the patches details to the patches list
                 patches.append((patch, (i, j)))
+
         return patches
 
     def _validate_and_convert_range(self, key):
         """
-        Validates a range from the config and converts its values to floats.
+            Validate the two-element numeric range in the config and return it's floats
+            Arguments:
+                key (str): config file key to read
+            Returns:
+                list(float): two-element list as floats
+            Raises:
+                ValueError: if the entry is not a two-element list of the vals are not nums
         """
+        # Read from the config
         val = self.cfg.get(key)
+
+        # Check if it is a two-element list
         if not isinstance(val, list) or len(val) != 2:
             raise ValueError(f"Configuration error in '{key}': Must be a list of two numbers [min, max]. Found: {val}")
+        
+        # Try to make the vals into floats
         try:
             return [float(v) for v in val]
+        
+        # Raise error if not
         except (ValueError, TypeError):
             raise ValueError(f"Configuration error in '{key}': Values must be convertible to numbers. Found: {val}")
 
 
     def _process_single_exposure(self, detector_id: str, index: int, inject_events: bool = True):
         """
-        Simulates one full exposure, creates difference images, extracts patches,
-        and saves them to an HDF5 file. Returns metadata for this exposure.
+            Simulate one exposure, and optinally injecting events by creating
+            an up-the-ramp baseline, injecting anomalies using anomaly
+            functions, subtracting the 0th read the up ramp, and saving 
+            the exposure as hdf5 and its metadata as a json file
+            Arguments:
+                detector_id (str): key into gain library 
+                index (int): exposure index to include in filenames/metadata
+                inject_events (bool, optional): if True, simulate anomalies; if False,
+                    produce baseline-only exposure (default is True)
+            Returns:
+                None      
         """
+        # Exposure naming, include wheather an injection occured
         event_type = "events" if inject_events else "baseline"
         exposure_id = f"{detector_id}_{event_type}_{index:04d}"
         self.logger.info(f"Starting simulation for {exposure_id}")
 
-        # --- 1. Set up random parameters ---
+        # Grab the random sim params from the config
         gain = self.cfg["gain_library"][detector_id]
         shape = tuple(self.cfg["image_shape"])
         num_frames = self.cfg["num_frames"]
         sat_dn = self.cfg["saturation_dn"]
 
+        # Grab the ranges and convert them to the correct formatting
         dark_current_range = self._validate_and_convert_range("dark_current_range")
         read_noise_range = self._validate_and_convert_range("read_noise_range")
         gaussian_noise_range = self._validate_and_convert_range("gaussian_noise_range")
 
+        # Sample specific values for this exposure with a uniform distribution
         dark_current = np.random.uniform(*dark_current_range)
         read_noise = np.random.uniform(*read_noise_range)
         gaussian_noise = np.random.uniform(*gaussian_noise_range)
         
+        # Collect the metadata parameters
         params = {
             "gain": float(gain), "dark_current": float(dark_current), 
             "read_noise": float(read_noise), "gaussian_noise": float(gaussian_noise), 
             "injected_events": {"counts": {}, "details": []}
         }
 
-        # --- 2. Generate baseline ramp ---
+        # Generate a baseline ramp
         ramps = generate_baseline_ramp(
             shape, num_frames, gain, sat_dn,
             dark_current, read_noise, gaussian_noise
         )
 
-        # --- 3. Inject events if requested ---
+        # Inject the events if opted
         if inject_events:
+            # Grab the cr range per exposure and create a random count
             cr_range = self._validate_and_convert_range("cosmic_ray_per_exp_range")
             num_crs = np.random.randint(low=cr_range[0], high=cr_range[1] + 1)
             
+            # Grab the snowball range and gen a random num from the range
             sb_range = self._validate_and_convert_range("snowballs_per_exp_range")
             num_snowballs = np.random.randint(low=sb_range[0], high=sb_range[1] + 1)
             
+            # Grab the rtn range and gen a random num from the range
             rtn_range = self._validate_and_convert_range("rtn_per_exp_range")
             num_rtn = np.random.randint(low=rtn_range[0], high=rtn_range[1] + 1)
             
+            # Grab the cr charge range 
             cosmic_ray_charge_range = self._validate_and_convert_range("cosmic_ray_charge_range")
+
+            # Grab the snowball radius range
             snowball_radius_range = self._validate_and_convert_range("snowball_radius_range")
-            # snowball_core_charge_range = self._validate_and_convert_range("snowball_core_charge_range")
+
+            # Grab the rtn height range
             rtn_offset_range = self._validate_and_convert_range("rtn_offset_range")
+
+            # Grab the rtn period range
+            rtn_period_range = self._validate_and_convert_range("rtn_period_range")
+
+            # Grab rtn duty fraction range
+            rtn_duty_fraction_range = self._validate_and_convert_range("rtn_duty_fraction_range")
             
-            # --- Load new snowball halo parameter ranges ---
+            # Grab the snowball amplitude range
             snowball_halo_amp_range = self._validate_and_convert_range("snowball_halo_amplitude_ratio_range")
+
+            # Grab the snowball radial decay range
             snowball_halo_decay_range = self._validate_and_convert_range("snowball_halo_decay_scale_range")
 
+            """Inject cosmic rays"""
+            # Save the number of crs to be injected
             params["injected_events"]["counts"]["cosmic_rays"] = int(num_crs)
+            
+            # Iterate through every cr event
             for _ in range(num_crs):
+                # Generate a random coord 
                 position = tuple(int(p) for p in (np.random.randint(0, s) for s in shape))
+
+                # Generate a random frame
                 frame = int(np.random.randint(1, num_frames))
+
+                # Generate a random charge
                 charge_e = float(np.random.uniform(*cosmic_ray_charge_range))
+
+                # Inject the event
                 inject_cosmic_ray(ramps, position, frame, charge_e, gain, sat_dn)
+
+                # Save the cr's metadata
                 params["injected_events"]["details"].append({
-                    "type": "cosmic_ray", "position": position, "frame": frame, "charge_e": charge_e
+                    "type": "cosmic_ray", 
+                    "position": position, 
+                    "frame": frame, 
+                    "charge_e": charge_e
                 })
 
+            """Inject snowball"""
+            # Save the total number of snowballs to be injected
             params["injected_events"]["counts"]["snowballs"] = int(num_snowballs)
+
+            # Iterate through every snowball
             for _ in range(num_snowballs):
+                # Generate a random center for the event
                 center = tuple(int(c) for c in (np.random.randint(0, s) for s in shape))
+
+                # Generate a random radius for the event
                 radius = float(np.random.uniform(*snowball_radius_range))
+
+                # Core charge has to be the saturation
                 core_charge = sat_dn * gain
+
+                # Generate a random impact frame
                 impact_frame = int(np.random.randint(1, num_frames))
                 
-                # Randomize halo parameters for each snowball ---
+                # Generate a random amplitude radtio
                 halo_amplitude_ratio = float(np.random.uniform(*snowball_halo_amp_range))
+
+                # Generate a random rate of halo decay
                 halo_decay_scale = float(np.random.uniform(*snowball_halo_decay_range))
 
-                # Create a unique halo profile function for this specific snowball
+                # Define a halo profile for the snowball !NOTE you can change me!!
                 def halo_profile(d):
                     amplitude = core_charge * halo_amplitude_ratio
                     return amplitude * np.exp(-d / halo_decay_scale)
 
+                # Inject the event
                 inject_snowball(ramps, center, radius, core_charge, halo_profile, gain, sat_dn, impact_frame)
                 
-                # Save the new halo parameters in the metadata
+                # Save the snowballs metadata
                 params["injected_events"]["details"].append({
-                    "type": "snowball", "center": center, "radius": radius, 
-                    "core_charge_e": core_charge, "impact_frame": impact_frame,
+                    "type": "snowball", 
+                    "center": center, 
+                    "radius": radius, 
+                    "core_charge_e": core_charge, 
+                    "impact_frame": impact_frame,
                     "halo_amplitude_ratio": halo_amplitude_ratio,
                     "halo_decay_scale": halo_decay_scale
                 })
 
-            rtn_offset_range = self._validate_and_convert_range("rtn_offset_range")
-            # Add these new ranges to your config
-            rtn_period_range = self._validate_and_convert_range("rtn_period_range")
-            rtn_duty_fraction_range = self._validate_and_convert_range("rtn_duty_fraction_range")
-
+            """Inject Random Telegraph Noise"""
+            # Save the total number of rtns
             params["injected_events"]["counts"]["rtn"] = int(num_rtn)
+
+            # Iterate through all of the rtn
             for _ in range(num_rtn):
+                # Genreate a random position
                 position = tuple(int(p) for p in (np.random.randint(0, s) for s in shape))
+
+                # Genreate a random height for the rtn
                 offset_e = float(np.random.uniform(*rtn_offset_range))
                 
                 # Draw period (T) and duty fraction (f) for each RTN event
                 period = int(np.random.uniform(*rtn_period_range))
                 duty_fraction = float(np.random.uniform(*rtn_duty_fraction_range))
 
+                # Inject the event
                 inject_rtn(ramps, position, offset_e, period, duty_fraction, gain, sat_dn)
                 
+                # Save the rtn metadata
                 params["injected_events"]["details"].append({
                     "type": "rtn", 
                     "position": position, 
@@ -196,23 +349,39 @@ class DataSetCreator:
                     "duty_fraction": duty_fraction
                 })
             
+            # Log girlie's success!
             self.logger.info(f"  Injecting: {num_crs} CRs, {num_snowballs} Snowballs, {num_rtn} RTN pixels.")
 
+        # Subtract the 0th read
         diff_ramps = ramps[1:] - ramps[0]
+
+        # Create the patches
         patches = self._extract_patches(diff_ramps)
 
+        # Create a filename for the current exp
         h5_filename = f"{exposure_id}_patches.h5"
         h5_path = os.path.join(self.output_dir, h5_filename)
         
+        # Save all of the patches metadata
         patch_metadata = []
+
+        # Open the patches filepath
         with h5py.File(h5_path, "w") as hf:
+            # Iterate through all of the patch data
             for patch_idx, (patch_data, (r, c)) in enumerate(patches):
+                # Create a name for the patch
                 dset_name = f"patch_{patch_idx:04d}"
+
+                # Save the patches pixel details
                 hf.create_dataset(dset_name, data=patch_data, compression="gzip")
+                
+                # Save the patches metadata
                 patch_metadata.append({"id": dset_name, "coords": [int(r), int(c)]})
 
-        self.logger.info(f"  Saved {len(patches)} patches to {h5_filename}")
+        # Log success
+        self.logger.info(f"Saved {len(patches)} patches to {h5_filename}")
 
+        # Generate metadata for the current exposure
         exposure_meta = {
             "exposure_id": exposure_id,
             "parameters": params,
@@ -226,109 +395,87 @@ class DataSetCreator:
 
         # Create the metadata directory structure: output_dir/metadata/detector_id/
         meta_dir = os.path.join(self.output_dir, "metadata", detector_id)
+
+        # Make the metadata directory
         os.makedirs(meta_dir, exist_ok=True)
         
-        # Save this single exposure's metadata to its own file
+        # Create a filename using the exposure id
         meta_filename = f"{exposure_id}.json"
+
+        # Create the metadata path
         meta_path = os.path.join(meta_dir, meta_filename)
+
+        # Open the metadata file and save the current exposures data
         with open(meta_path, 'w') as f:
             json.dump(exposure_meta, f, indent=4)
         
+        # Log girlie
         self.logger.info(f"  Saved metadata to {os.path.join('metadata', detector_id, meta_filename)}")
 
-        # This function no longer needs to return anything
         return
-
-    def create_dataset_local(self):
-        """
-        Main method to create the full dataset in parallel. Each worker process
-        will generate data and save its own metadata file independently.
-        """
-        self.logger.info("="*50)
-        self.logger.info("Starting dataset creation...")
-        self.logger.info("="*50)
-
-        num_event_exp = self.cfg["num_exposure_events"]
-        num_baseline_exp = self.cfg["num_baseline_exposures"]
-        num_workers = self.cfg["num_workers"]
-
-        jobs = []
-        # NOTE: Reduced the loop to one detector for testing clarity, 
-        # you can revert this to self.cfg["gain_library"].keys()
-        for detector_id in self.cfg["gain_library"].keys():
-            if detector_id == '18220_SCA':
-                for i in range(num_event_exp):
-                    jobs.append((self.config_path, detector_id, i, True))
-                for i in range(num_baseline_exp):
-                    jobs.append((self.config_path, detector_id, i, False))
-
-        self.logger.info(f"Total jobs to process: {len(jobs)} with {num_workers} workers.")
-
-        # The pool now just runs the jobs. No need to collect metadata here.
-        try:
-            with mp.Pool(processes=num_workers) as pool:
-                # Use tqdm for a progress bar
-                list(tqdm(pool.imap_unordered(worker, jobs), total=len(jobs), desc="Overall Progress"))
-        except Exception as e:
-            self.logger.error(f"A critical error occurred during multiprocessing: {e}")
-            self.logger.error("Aborting dataset creation.")
-            sys.exit(1)
-
-        self.logger.info("="*50)
-        self.logger.info("Dataset creation complete.")
-        self.logger.info("="*50)
 
     def create_dataset(self, start, end):
         """
-        Main method to create the full dataset in parallel.
-        The loop is driven by the start and end indices from the SLURM job array.
+            Create exposures for a certain index range in a slurm array script, 
+            where for each index, two jobs are queued per detectors, one 
+            baseline and one with events injected
+            Arguments:
+                start (int): first exposure index 
+                end (int): last exposure index
+            Returns:
+                None
+            Note:
+                * contigent on YOU USING A SLURM ARRAY!!!
         """
+        # Logger header
         self.logger.info("="*50)
         self.logger.info(f"Starting dataset creation for index range: {start} to {end}")
         self.logger.info("="*50)
 
+        # Grab the wanted number of workers
         num_workers = self.cfg["num_workers"]
         
-        # The 'jobs' list will hold all the tasks for this specific SLURM job
+        # Jobs list which will hold of the tasks for each worker (cute!!)
         jobs = []
 
-        # The main loop now iterates over the range provided by the SLURM job
+        # Iterate through the range provided by miss slurm
         for i in range(start, end + 1):
-            # Inside this loop, we iterate through each detector as before
+            # Iterate through all of the detector ids
             for detector_id in self.cfg["gain_library"].keys():
-                
-                # --- This is the key part ---
-                # For each index 'i' and each detector, add two jobs to the list:
-                # 1. An "event" exposure with injections.
-                # 2. A "baseline" exposure with NO injections.
-                
-                # The 'is_baseline' flag tells your worker function what to do.
-                # 'True' means create a baseline exposure.
+                # Generate a baseline exposure
                 jobs.append((self.config_path, detector_id, i, True)) 
                 
-                # 'False' means create an event exposure with injections.
+                # Generate an exposure with events
                 jobs.append((self.config_path, detector_id, i, False))
 
+        # Log that you gave the workers jobs!! thank god
         self.logger.info(f"Created {len(jobs)} total jobs for this worker to process.")
 
-        # Now, use the multiprocessing pool to execute all the jobs
+        # Check to see if there are multiple works
         if num_workers > 1:
+            # Using pooling to spread the tasks
             with Pool(processes=num_workers) as pool:
-                # You'll need a worker function (like _process_single_exposure_wrapper)
-                # that can unpack the tuple of arguments.
+                # Call the process single exposure wrapper so the workers dont fight
                 pool.starmap(self._process_single_exposure_wrapper, jobs)
         else:
-            # For debugging without multiprocessing
+            # Serial procesing (just for debugging, ignore)
             for job_args in jobs:
                 self._process_single_exposure_wrapper(*job_args)
-                
+        
+        # Log girlie
         self.logger.info(f"Finished processing all jobs for index range: {start} to {end}")
 
-    # You'll also need a small wrapper function if your worker function 
-    # doesn't already accept a tuple of arguments.
-    def _process_single_exposure_wrapper(self, config_path, detector_id, index, is_baseline):
-        """Helper function to unpack arguments for the multiprocessing pool."""
-        # Re-initialize the DataSetCreator or pass necessary components if needed
-        # This is important because multiprocessing creates new processes.
-        # A simpler approach might be to just call the processing method directly.
+    def _process_single_exposure_wrapper(self, detector_id, index, is_baseline):
+        """
+            Adapter for Pool.starmap to call the method with NO FIGHTING
+            Arguments:
+                detector_id (str): detector key as in the gain library
+                index (int): exposure index
+                is_baseline (bool): if True, create baseline; if False, inject events
+            Returns:
+                None
+            Notes:
+                * multiprocessing spawns fresh processes; ensure any required state is 
+                  available from self or the reloaded method
+        """
         self._process_single_exposure(detector_id, index, is_baseline)

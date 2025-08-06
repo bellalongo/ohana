@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class DoubleConv3D(nn.Module):
     """
         Applies two consecutive 3D convolutions, each followed by batch normalization and ReLU activation

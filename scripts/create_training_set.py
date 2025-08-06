@@ -3,16 +3,11 @@ import sys
 import os
 
 # Add the parent directory to the path to allow for relative imports
-# This allows the script to find the 'ohana' package
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from ohana.training.training_set_creator import DataSetCreator
 
 def main():
-    """
-    Main entry-point for the HPC data simulation script.
-    Parses command-line arguments from SLURM and passes them to the DataSetCreator.
-    """
     parser = argparse.ArgumentParser(
         description="Generate synthetic detector data using an HPC job array."
     )
@@ -42,10 +37,10 @@ def main():
     
     args = parser.parse_args()
 
-    # 1. Instantiate the creator with the configuration file
+    # Intialize the creator with the configuration file
     creator = DataSetCreator(config_path=args.config)
     
-    # 2. Call the main creation method, passing the job-specific range
+    # Call the main creation method, passing the job-specific range
     creator.create_dataset(start=args.start_index, end=args.end_index)
 
 if __name__ == "__main__":

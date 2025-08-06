@@ -10,6 +10,7 @@ from ohana.preprocessing.data_loader import DataLoader
 from ohana.preprocessing.preprocessor import Preprocessor
 from ohana.models.unet_3d import UNet3D
 
+
 class Predictor:
     """
         Patch-wise U 3D U-Net infereence and post-processing for anomally detection by loading the 
@@ -248,5 +249,5 @@ class Predictor:
 
         # Log miss girl
         print(f"Found a total of {len(detections)} individual anomalies.")
-        
+
         return detections

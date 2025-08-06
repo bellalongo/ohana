@@ -9,6 +9,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class OhanaDataset(Dataset):
     """
         Dataset for patch-wise training for the 3DU-Net on the datacubes by scanning a directory
@@ -144,52 +145,97 @@ class OhanaDataset(Dataset):
             to see if the event's center is in the patch, mark the pixel with the class
             index. If multiple eventsd are in one pixel, use snowball as priority becasue
             girlie is HUGE
+            Arguments:
+                patch_coords (tuple([int, int])): top-left (y, x) of the patch
+                all_events (list(dicr[(str, Any)])): list of event dictionaries
+                    type (str): class name in the class map
+                    position or center (list(int, int)): (y, x) cords of the event
+            Returns:
+                np.ndarray: integer mask of the shape (H, W) for the patch
+            Notes:
+                * priority can change, but currently it is 
+                  snowball > rtn > cosmic ray > background
         """
         # Grab the patch dimensions
-        ph, pw = self.patch_size
-        py, px = patch_coords
-        target_mask = np.zeros((ph, pw), dtype=np.uint8)
+        patch_height, patch_width = self.patch_size
+
+        # Grab the patch coordinates
+        patch_y, patch_x = patch_coords
+
+        # Initialize to be the background
+        target_mask = np.zeros((patch_height, patch_width), dtype=np.uint8)
+
+        # Manual priority !NOTE change me if dif wanted order or dif training data
         event_priority = {'snowball': 3, 'rtn': 2, 'cosmic_ray': 1}
+
+        # Iterate over all events in the patch
         for event in all_events:
+            # Grab the event type
             event_type = event['type']
+
+            # Grab either the event postion (rtn, cr) or center (snowball)
             pos_key = "position" if "position" in event else "center"
-            ey, ex = tuple(event[pos_key])
-            if (py <= ey < py + ph) and (px <= ex < px + pw):
-                rel_y, rel_x = ey - py, ex - px
+
+            # Make the position as a tuple
+            event_y, event_x = tuple(event[pos_key])
+
+            # Check if the event is within the current patche's bounds
+            if (patch_y <= event_y < patch_y + patch_height) and (patch_x <= event_x < patch_x + patch_width):
+                # Convert the patch to the relevant coordinates
+                rel_y, rel_x = event_y - patch_y, event_x - patch_x
+
+                # Apply the event priority to the patch
                 if event_priority.get(event_type, 0) > target_mask[rel_y, rel_x]:
                     target_mask[rel_y, rel_x] = self.class_map[event_type]
+
         return target_mask
 
     def __getitem__(self, idx):
         """
-        Fetches a patch and adds a channel dimension for the 3D U-Net.
+            Grab one sample from the model (C=1, T, H, W) patch tensor and (H, W) mask tensor by
+            loading the patch tensor from a hdf5 ref by the exposure metadata and the channel
+            dim is added to match the model's input layout
+            Arguments:
+                idx (int): global sample index
+            Returns:
+                dict(str, torch.Tensor): a dictionary with
+                    patch: float tensor of shape (1, T, H, W)
+                    mask: long tensor of shape (H, W) with the class indicies
         """
-        # Figure out which exposure and which patch within that exposure to load
+        # Figure out the per exposure patch count using the very first exp
         metadata = self._get_patch_info(self.exposures[0])
         num_patches_per_exp = len(metadata['patch_info']['patches'])
         
+        # Map the global index
         exp_idx = idx // num_patches_per_exp
         patch_idx_in_exp = idx % num_patches_per_exp
 
+        # Retrieve the metadata from the target exposure
         meta_path = self.exposures[exp_idx]
         metadata = self._get_patch_info(meta_path)
         
+        # Select the patch record and the source hdf5 path
         patch_info = metadata['patch_info']['patches'][patch_idx_in_exp]
         h5_path = os.path.join(self.data_dir, metadata['h5_file'])
         patch_id = patch_info['id']
         
+        # Read the patch volume from the file as floast32
         with h5py.File(h5_path, 'r') as hf:
             patch_data = hf[patch_id][:].astype(np.float32)
 
+        # Make the per-patch target mask (H, W) from the event annotations
         target_mask = self._create_target_mask(tuple(patch_info['coords']), metadata['parameters']['injected_events']['details'])
         
-        # Original patch_data shape: (T, H, W)
-        # Add a channel dimension for the 3D model: (C, T, H, W) where C=1
+        # Add a channel dimension for the 3D model with (C, T, H, W) where C=1
         patch_tensor = torch.from_numpy(patch_data).unsqueeze(0) 
+
+        # Target mask should be a torch.long for the loss function like CEL
         mask_tensor = torch.from_numpy(target_mask.astype(np.int64))
 
+        # Create the sample dictionary
         sample = {"patch": patch_tensor, "mask": mask_tensor}
 
+        # Check if the sample needs to be transformed (optional)
         if self.transform:
             sample = self.transform(sample)
 
