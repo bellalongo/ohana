@@ -1,4 +1,3 @@
-
 from .predictor import Predictor
 
 __all__ = [

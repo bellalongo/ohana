@@ -3,6 +3,7 @@ from os.path import exists
 
 # Import the new, dedicated corrector class
 from .reference_pixel_corrector import ReferencePixelCorrector
+from .temporal_analyzer import TemporalAnalyzer
 
 class Preprocessor:
     """

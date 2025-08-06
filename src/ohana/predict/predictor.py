@@ -5,10 +5,11 @@ from tqdm import tqdm
 from scipy.ndimage import label, center_of_mass
 from torch.cuda.amp import autocast
 from collections import OrderedDict
+import os
 
-from ohana.preprocessing.data_loader import DataLoader
-from ohana.preprocessing.preprocessor import Preprocessor
-from ohana.models.unet_3d import UNet3D
+from ..preprocessing.data_loader import DataLoader
+from ..preprocessing.preprocessor import Preprocessor
+from ..models.unet_3d import UNet3D
 
 
 class Predictor:
@@ -198,19 +199,35 @@ class Predictor:
         # Extract the overlapping patches of the exposure
         patches = self._extract_patches(self.processed_cube)
         
-        # Prepare an empty 2D mask to accumlate the predictions on
+        # Grab patch dimensions
         _, H, W = self.processed_cube.shape
-        self.prediction_mask = np.zeros((H, W), dtype=np.uint8)
 
-        # Iterate over patches with a progress bar
-        for patch_data, (r, c) in tqdm(patches, desc="Predicting Patches"):
-            # Convert the patch dimensions to be a torch tensor
-            input_tensor = torch.from_numpy(patch_data).float().unsqueeze(0).unsqueeze(0).to(self.device)
-            
+        # Initialize global prediction mask as a torch tensor on CPU for efficient updates
+        global_mask = torch.zeros((H, W), dtype=torch.uint8, device=self.device)
+        batch_size = 4
+
+        # Ensure PyTorch uses all CPU cores
+        if self.device.type == "cpu":
+            torch.set_num_threads(os.cpu_count() or 1)
+
+        # Make a progress bar for the patch batches
+        progress_bar = tqdm(total=len(patches), desc="Predicting Patches")
+
+        # Iterate through all batches
+        for i in range(0, len(patches), batch_size):
+            # Isolate the curent batch
+            batch = patches[i:i + batch_size]
+
+            # Grab the list of the current batch's data arrays
+            batch_volumes = [p for (p, _) in batch]
+
+            # Stack the volumes into one tensor (B, 1, , patch_height, patch_width)
+            input_tensor = torch.from_numpy(np.stack(batch_volumes)).float().unsqueeze(1).to(self.device)
+
             # Perform the min max scaling (0, 1)
             b, c_in, t, h, w = input_tensor.shape
 
-            # Flatten the tensor without the batch
+            # Flatten each sample 
             tensor_flat = input_tensor.reshape(b, -1)
 
             # Grab the per sample min
@@ -227,8 +244,12 @@ class Predictor:
 
             # Perform the inference on the patches
             with torch.no_grad():
-                # (1, C, T', patch_height, patch_width)
-                with autocast():
+                # Check the device type to see if can do autocast
+                if self.device.type == 'cuda':
+                    with autocast():
+                        # (1, C, T', patch_height, patch_width)
+                        logits = self.model(normalized_tensor)
+                else:
                     logits = self.model(normalized_tensor)
 
                 # Use the center time slice of the model output as the final prediction
@@ -236,13 +257,21 @@ class Predictor:
                 central_logits = logits[:, :, T_out // 2, :, :]
 
                 # Convert the logits to the class indices by using argmax
-                pred_mask = torch.argmax(central_logits, dim=1).squeeze(0).cpu().numpy()
-            
-            # Paste the per patch predictions into the global mask 
-            ph, pw = pred_mask.shape
+                pred_batch = torch.argmax(central_logits, dim=1).to(torch.uint8)
 
-            # Use the per pixel max to combine the overlapping predictions 
-            self.prediction_mask[r:r+ph, c:c+pw] = np.maximum(self.prediction_mask[r:r+ph, c:c+pw], pred_mask)
+                # Iterate through all of the patch data
+                for (patch_data, (r, c)), pred_mask in zip(batch, pred_batch):
+                    # Paste the per patch predictions into the global mask 
+                    ph, pw = pred_mask.shape
+
+                    # Use the per pixel max to combine the overlapping predictions 
+                    self.prediction_mask[r:r+ph, c:c+pw] = np.maximum(self.prediction_mask[r:r+ph, c:c+pw], pred_mask)
+
+                progress_bar.update(len(batch))
+            progress_bar.close()
+
+        # Create the prediction mask into a numpy array
+        self.prediction_mask = global_mask.cpu().numpy()
 
         # Convert the 2D mask to a list of object detections by using connected componetnts
         detections = self._find_objects_from_mask(self.prediction_mask)
