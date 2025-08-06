@@ -218,3 +218,6 @@ slurms
 
 configs/secret_creator_config.yaml
 configs/secret_model_config.yaml
+
+trained_models
+
