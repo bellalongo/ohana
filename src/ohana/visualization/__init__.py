@@ -1,4 +1,5 @@
 from .plotter import ResultVisualizer
 
-__all
-
+__all__ = [
+    "ResultVisualizer"
+]

@@ -1,282 +1,199 @@
-import torch
-import numpy as np
-import yaml
-from tqdm import tqdm
-from scipy.ndimage import label, center_of_mass
-from torch.cuda.amp import autocast
-from collections import OrderedDict
 import os
+import logging
+import numpy as np
+from tqdm import tqdm
+from pathlib import Path
 
+# Use relative imports for the new package structure
 from ..preprocessing.data_loader import DataLoader
 from ..preprocessing.preprocessor import Preprocessor
 from ..models.unet_3d import UNet3D
+from .predict_cosmic_rays import CosmicRayDetector
+from .predict_rtn import TelegraphNoiseDetector
+from ..config import DetectorConfig
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class Predictor:
     """
-        Patch-wise U 3D U-Net infereence and post-processing for anomally detection by loading the 
-        trained model, preprocessing an exposure (either fits or tif), aggregating per-patch 
-        predictions into a full-frame mask, and extracting obejct centroids with connected
-        components
+        Main class for running the anomaly detection pipeline on an exposure
     """
-    def __init__(self, model_path: str, config_path: str):
+    def __init__(self, model_path, config):
         """
             Arguments:
-                model_path (str): Path to the .pt or .pth file with the model weights
-                config_path (str): Path to a YAML config with keys:
-                    class_map (dict): "background":0, "cosmic_ray": 1, etc
-                    patch_size (list[int, int]): [height, width] of 2D crop / patch
-                    overlap (int): pixels of overlap between adjacant patches
+                model_path (str): path to the trained model file
+                config (DetectorConfig): dataclass object holding all parameters
             Attributes:
-                model_path (str): stored path to model weights
-                cfg (dict[str, Any]): parsed yaml configuration
-                device (torch.device): cuda if available, else cpu
-                data_loader (DataLoader): handles raw exposure loading
-                preprocessor (Preprocessor): preprocessing pipeline before model inference
-                model (UNet3D): loaded 3D U-Net model in evaluation mode
-                processed_cube (np.ndarray or None): preprocessed input volume (T, H, W)
-                prediction_mask (np.ndarray or None): final 2D per-pixel class mask (H, W)
+                config (DetectorConfig): stored configuration object
+                preprocessor (Preprocessor): preprocessing pipeline utilities
+                data_loader (DataLoader): exposure loading utility
+                model (Any or None): placeholder for model (rule-based mode if None)
+                cosmic_ray_detector (CosmicRayDetector): rule-based CR detector
+                rtn_detector (TelegraphNoiseDetector): rule-based RTN detector
         """
-        # Save the model path
-        self.model_path = model_path
+        # Store the configuration
+        self.config = config
 
-        # Load the yaml config file
-        with open(config_path, 'r') as f:
-            self.cfg = yaml.safe_load(f)
-        
-        # Set up device to be either cpu or cpu
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Create the preprocessor with the provided configuration
+        self.preprocessor = Preprocessor(config)
 
-        # Initailize the helper functions for the preprocessing
+        # Instantiate the data loader
         self.data_loader = DataLoader()
-        self.preprocessor = Preprocessor()
 
-        # Load the model and set it to be in evaluation mode
-        self.model = self._load_model()
-        self.model.eval()
-        
-        # Initialize the processed data cube, as well as prediction mask
-        self.processed_cube = None
-        self.prediction_mask = None
+        # Load or stub the model as configured
+        self.model = self.load_model(model_path)
 
-    def _load_model(self):
+        """Initialize rule-based detectors"""
+        # Cosmic ray detector with shared configuration
+        self.cosmic_ray_detector = CosmicRayDetector(config)
+
+        # Telegraph noise detector with shared configuration
+        self.rtn_detector = TelegraphNoiseDetector(config)
+
+    def load_model(self, model_path):
         """
-            Load the 3DUnet and her weights, and data parallel checkpoints
+            Load the UNet3D model from the specified path
             Arguments:
-                None
+                model_path (str): path to the trained model file
             Returns:
-                UNet3D: model moves to the determined device with the loaded weights
+                None: placeholder for rule-based-only inference
+            Notes:
+                * rule-based detectors are active regardless of model presence
         """
-        # Log whihc file is being loaded for the model
-        print(f"Loading 3D U-Net model from: {self.model_path}")
+        # Announce model path and operating mode
+        logging.info(f"Model path provided: {model_path}. Rule-based detectors will be used.")
 
-        # Determine the length of the classes based on the config (should be these) !NOTE CHANGE IF DOING A DIF MODEL
-        class_map_default = {"background": 0, "cosmic_ray": 1, "snowball": 2, "rtn": 3}
-        num_classes = len(self.cfg.get('class_map', class_map_default))
+        # Return None to indicate rule-based-only pipeline
+        return None
 
-        # Build the model with the input being just a single channel !NOTE CHANGE IF DIF TRAINING DATA
-        model = UNet3D(n_channels=1, n_classes=num_classes)
+    def _get_output_paths(self, exposure_path, output_dir):
+        """
+            Helper to generate standardized output file paths
+            Arguments:
+                exposure_path (str): path to the input exposure
+                output_dir (str): base output directory
+            Returns:
+                dict: mapping of artifact names to their resolved file paths
+            Notes:
+                * organizes outputs under raw/, processed/, temporal/ subfolders
+        """
+        # Derive a base name from the exposure path
+        base_name = Path(exposure_path).stem
 
-        # Load the state dictionary on the correct device
-        state_dict = torch.load(self.model_path, map_location=self.device)
+        # Construct the path bundle for artifacts
+        return {
+            "raw": Path(output_dir) / "raw" / f"{base_name}_raw.npy",
+            "processed": Path(output_dir) / "processed" / f"{base_name}_processed.npy",
+            "temporal": Path(output_dir) / "temporal" / f"{base_name}_temporal.npz",
+        }
 
-        # If saved with DataParallel (2 GPU) the keys are module!
-        if next(iter(state_dict)).startswith('module.'):
-            # Store the keys without module prefix
-            new_state_dict = OrderedDict()
+    def predict(self, exposure_path, output_dir="prediction_outputs"):
+        """
+            Run the full anomaly detection pipeline on a single exposure
+            Arguments:
+                exposure_path (str): path to the exposure file
+                output_dir (str): output directory for cached artifacts
+            Returns:
+                list[dict]: consolidated list of detected and classified anomalies
+            Notes:
+                * uses caching to skip repeated preprocessing on the same exposure
+                * runs rule-based detectors on the processed products
+        """
+        # Announce the exposure under analysis
+        logging.info(f"--- Analyzing exposure: {exposure_path} ---")
 
-            # Iterate through the key and value pairs in state dict
-            for k, v in state_dict.items():
-                # Strip module (7 chars)
-                new_state_dict[k[7:]] = v
+        # Compute output paths and ensure directories exist
+        paths = self._get_output_paths(exposure_path, output_dir)
+        for p in paths.values():
+            p.parent.mkdir(parents=True, exist_ok=True)
 
-            # Load the fixed state dictionary
-            model.load_state_dict(new_state_dict)
-
-        # If not saved with DataParallel (1 GPU)
+        """1) Load or compute raw stack"""
+        # Load cached raw data if available
+        if os.path.exists(paths["raw"]):
+            logging.info(f"Loading cached raw data from {paths['raw']}...")
+            raw_stack = np.load(paths["raw"])
+        # Otherwise load from source and cache
         else:
-            # The the state dictionary as is
-            model.load_state_dict(state_dict)
+            logging.info("Loading and preprocessing exposure...")
+            raw_stack = self.data_loader.load_exposure(exposure_path)
+            logging.info(f"Saving raw data to {paths['raw']}...")
+            np.save(paths["raw"], raw_stack)
 
-        # Move the model to the predetermined device
-        model.to(self.device)
+        """2) Load or compute processed stack (reference-pixel corrected)"""
+        # Load cached processed stack if available
+        if os.path.exists(paths["processed"]):
+            logging.info(f"Loading cached processed data from {paths['processed']}...")
+            processed_stack = np.load(paths["processed"])
+        # Otherwise apply reference pixel correction and cache
+        else:
+            logging.info(f"Applying reference pixel correction to stack of shape {raw_stack.shape}...")
+            processed_stack = self.preprocessor.correct_reference_pixels(raw_stack)
+            logging.info(f"Saving processed data to {paths['processed']}...")
+            np.save(paths["processed"], processed_stack)
 
-        return model
+        """3) Load or compute temporal features"""
+        # Load cached temporal features if available
+        if os.path.exists(paths["temporal"]):
+            logging.info(f"Loading cached temporal features from {paths['temporal']}...")
+            temporal_data = np.load(paths["temporal"], allow_pickle=True)
+            temporal_features = {key: temporal_data[key] for key in temporal_data.files}
+        # Otherwise analyze temporal patterns and cache
+        else:
+            logging.info("Performing temporal analysis...")
+            temporal_features = self.preprocessor.analyze_temporal(processed_stack)
+            logging.info(f"Saving temporal features to {paths['temporal']}...")
+            np.savez(paths["temporal"], **temporal_features)
 
-    def _extract_patches(self, volume: np.ndarray):
+        """4) Run detection and classification"""
+        # Execute configured detectors and collect events
+        logging.info("Running advanced detection algorithms...")
+        all_anomalies = self._detect_and_classify_anomalies(temporal_features, processed_stack)
+
+        # Summarize the pipeline run
+        logging.info("--- Analysis Complete ---")
+        logging.info(f"Found a total of {len(all_anomalies)} anomalies across all types.")
+
+        # Return the consolidated event list
+        return all_anomalies
+
+    def _detect_and_classify_anomalies(self, temporal_features, diff_stack):
         """
-            Create the overlapping 2D patches across (H x W) for each non destructive read by sliding a 
-            (patch_width x patch_height) window over (H x W) with a stride of (patch_height_overlap, 
-            patch_width_overlap) extracting 
+            Run all configured detectors and return a consolidated list of anomalies
             Arguments:
-                volumes (np.ndarray): preprocessed data (T, H, W)
+                temporal_features (dict): dictionary of temporal feature maps
+                diff_stack (np.ndarray): processed difference stack (T, H, W)
             Returns:
-                list(tuple[np.ndarray, tuple(int, int)]): list of (patch_volume, (row, col)) where 
-                    patch_volume is (T, patch_height, patch_width) and (row, col) is top-left cord
+                list[dict]: list of classified anomaly events across detectors
+            Notes:
+                * order: detect cosmic rays -> classify, then detect RTN -> classify
         """
-        # Grab the height and width of the datacube
-        _, H, W = volume.shape
+        # Container for all classified events
+        all_classified_events = []
 
-        # Grab patch height and width 
-        patch_height, patch_width = self.cfg["patch_size"]
+        """Cosmic Rays"""
+        # Detect cosmic ray candidates
+        logging.info("Detecting cosmic ray candidates...")
+        cr_candidates = self.cosmic_ray_detector.detect(temporal_features, diff_stack)
 
-        # Grab the patch overlap
-        overlap = self.cfg["overlap"]
+        # If candidates exist, classify them and collect results
+        if cr_candidates and cr_candidates.get('candidates'):
+            logging.info(f"Classifying {len(cr_candidates['candidates'])} cosmic ray candidates...")
+            classified_crs = self.cosmic_ray_detector.classify(cr_candidates)
+            all_classified_events.extend(classified_crs)
+            logging.info(f"Finalized {len(classified_crs)} cosmic ray events.")
 
-        # Compute the strides using the overlap and patch dims
-        step_h, step_w = patch_height - overlap, patch_width - overlap
+        """Telegraph Noise"""
+        # Detect telegraph noise candidates
+        logging.info("Detecting telegraph noise candidates...")
+        rtn_candidates = self.rtn_detector.detect(temporal_features, diff_stack)
 
-        # Initailize an array to store the patches in
-        patches = []
+        # If candidates exist, classify them and collect results
+        if rtn_candidates and rtn_candidates.get('candidates'):
+            logging.info(f"Classifying {len(rtn_candidates['candidates'])} telegraph noise candidates...")
+            classified_rtns = self.rtn_detector.classify(rtn_candidates)
+            all_classified_events.extend(classified_rtns)
+            logging.info(f"Finalized {len(classified_rtns)} telegraph noise events.")
 
-        # Iterate through all patch heights (first param of sliding window)
-        for i in range(0, H - patch_height + 1, step_h):
-            # Itetate through all patch widths (second param of sliding window)
-            for j in range(0, W - patch_width + 1, step_w):
-                # Append the current patch to the patches list
-                patches.append((volume[:, i:i+patch_height, j:j+patch_width], (i, j)))
-
-        return patches
-
-    def _find_objects_from_mask(self, mask: np.ndarray) -> list:
-        """
-            Run connected components analysis per class (not background), for each event find
-            the connected components, compute their centroids and return a list of detections
-            Arguments:
-                mask (np.ndarray): 2D class index mask (H, W)
-            Returns:
-                list(dict[str, Any]): each detection has:
-                    type (str): class label
-                    location_px (list[int, int]): [row, col] of the centroid pixel
-        """ 
-        # Initialize a list to store the detections in
-        detections = []
-
-        # Build inverse mapping for {class_index: class_name}
-        class_map_default = {"background": 0, "cosmic_ray": 1, "snowball": 2, "rtn": 3}
-        class_map_inv = {v: k for k, v in self.cfg.get('class_map', class_map_default).items()}
-
-        # Iterate though classes by their index and name
-        for class_idx, class_name in class_map_inv.items():
-            # Check if the current event is just background
-            if class_idx == 0: continue
-
-            # Create a binary mask for the current class
-            class_mask = (mask == class_idx).astype(int)
-
-            # Perform connected components on the mask, returning the labels and features
-            labeled_array, num_features = label(class_mask)
-
-            # Check if an object was even present
-            if num_features > 0:
-                # Grab the centers of the event
-                centers = center_of_mass(class_mask, labeled_array, range(1, num_features + 1))
-
-                # Iterate through the centroids of each event
-                for center in centers:
-                    # Append the event details to detections
-                    detections.append({'type': class_name, 'location_px': [int(round(center[0])), int(round(center[1]))]})
-
-        return detections
-
-    def predict(self, exposure_path: str, processed_exposure_file: str) -> list:
-        """
-            Run the prediction on a single exposure
-            Arguments:
-                exposure_path (str): file path or id understood by DataLoader
-            Returns:
-                list(dict[str, Any]): list of detections (class label and centroids)
-        """
-        # Log which exposure is being loaded (predicted on)
-        print(f"\n--- Analyzing exposure: {exposure_path} ---")
-
-        # Load the raw exposure
-        raw_exposure = self.data_loader.load_exposure(exposure_path)
-
-        # Preprorcess the exposure into a numpy array (T, H, W)
-        self.processed_cube = self.preprocessor.process_exposure(raw_exposure, processed_exposure_file)
-
-        # Extract the overlapping patches of the exposure
-        patches = self._extract_patches(self.processed_cube)
-        
-        # Grab patch dimensions
-        _, H, W = self.processed_cube.shape
-
-        # Initialize global prediction mask as a torch tensor on CPU for efficient updates
-        global_mask = torch.zeros((H, W), dtype=torch.uint8, device=self.device)
-        batch_size = 4
-
-        # Ensure PyTorch uses all CPU cores
-        if self.device.type == "cpu":
-            torch.set_num_threads(os.cpu_count() or 1)
-
-        # Make a progress bar for the patch batches
-        progress_bar = tqdm(total=len(patches), desc="Predicting Patches")
-
-        # Iterate through all batches
-        for i in range(0, len(patches), batch_size):
-            # Isolate the curent batch
-            batch = patches[i:i + batch_size]
-
-            # Grab the list of the current batch's data arrays
-            batch_volumes = [p for (p, _) in batch]
-
-            # Stack the volumes into one tensor (B, 1, , patch_height, patch_width)
-            input_tensor = torch.from_numpy(np.stack(batch_volumes)).float().unsqueeze(1).to(self.device)
-
-            # Perform the min max scaling (0, 1)
-            b, c_in, t, h, w = input_tensor.shape
-
-            # Flatten each sample 
-            tensor_flat = input_tensor.reshape(b, -1)
-
-            # Grab the per sample min
-            min_val = tensor_flat.min(dim=1, keepdim=True)[0]
-
-            # Grab the per sample max
-            max_val = tensor_flat.max(dim=1, keepdim=True)[0]
-
-            # Correct for a divide by 0 by adding epsilon (e)
-            tensor_flat = (tensor_flat - min_val) / (max_val - min_val + 1e-6)
-
-            # Reshape the tensor to be unflattened
-            normalized_tensor = tensor_flat.view(b, c_in, t, h, w)
-
-            # Perform the inference on the patches
-            with torch.no_grad():
-                # Check the device type to see if can do autocast
-                if self.device.type == 'cuda':
-                    with autocast():
-                        # (1, C, T', patch_height, patch_width)
-                        logits = self.model(normalized_tensor)
-                else:
-                    logits = self.model(normalized_tensor)
-
-                # Use the center time slice of the model output as the final prediction
-                T_out = logits.shape[2]
-                central_logits = logits[:, :, T_out // 2, :, :]
-
-                # Convert the logits to the class indices by using argmax
-                pred_batch = torch.argmax(central_logits, dim=1).to(torch.uint8)
-
-                # Iterate through all of the patch data
-                for (patch_data, (r, c)), pred_mask in zip(batch, pred_batch):
-                    # Paste the per patch predictions into the global mask 
-                    ph, pw = pred_mask.shape
-
-                    # Use the per pixel max to combine the overlapping predictions 
-                    self.prediction_mask[r:r+ph, c:c+pw] = np.maximum(self.prediction_mask[r:r+ph, c:c+pw], pred_mask)
-
-                progress_bar.update(len(batch))
-            progress_bar.close()
-
-        # Create the prediction mask into a numpy array
-        self.prediction_mask = global_mask.cpu().numpy()
-
-        # Convert the 2D mask to a list of object detections by using connected componetnts
-        detections = self._find_objects_from_mask(self.prediction_mask)
-
-        # Log miss girl
-        print(f"Found a total of {len(detections)} individual anomalies.")
-
-        return detections
+        # Return the full set of classified events
+        return all_classified_events

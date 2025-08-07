@@ -1,70 +1,77 @@
 import numpy as np
-from os.path import exists
+import logging
 
-# Import the new, dedicated corrector class
-from .reference_pixel_corrector import ReferencePixelCorrector
+# Import the necessary components
 from .temporal_analyzer import TemporalAnalyzer
+from .reference_pixel_corrector import ReferencePixelCorrector
 
 class Preprocessor:
     """
-    Handles the cleaning and preprocessing of raw H2RG data ramps.
-    This class orchestrates the sequence of cleaning steps.
+    Handles preprocessing steps by orchestrating specialized components
+    such as the ReferencePixelCorrector and TemporalAnalyzer.
     """
-    def __init__(self, perform_ref_correction: bool = True):
+    def __init__(self, config):
         """
-        Initializes the Preprocessor.
-
+        Initializes the Preprocessor and its components.
         Args:
-            perform_ref_correction (bool): If True, reference pixel correction
-                                           will be applied.
+            config: Dataclass object holding all parameters.
         """
-        self.perform_ref_correction = perform_ref_correction
-        if self.perform_ref_correction:
-            # Initialize the corrector class. It's now a component of the Preprocessor.
-            self.ref_corrector = ReferencePixelCorrector()
+        self.config = config
+        self.logger = logging.getLogger(self.__class__.__name__)
+
+        # --- CORRECTLY INITIALIZE ALL COMPONENTS ---
+        # Initialize the temporal analyzer
+        self.temporal_analyzer = TemporalAnalyzer(sigma_threshold=self.config.sigma_threshold)
         
-        print(f"Preprocessor initialized. Reference pixel correction: {'Enabled' if perform_ref_correction else 'Disabled'}.")
+        # Initialize the reference pixel corrector with parameters from the config
+        self.reference_pixel_corrector = ReferencePixelCorrector(
+            x_opt=getattr(self.config, 'ref_pixel_x_opt', 64),
+            y_opt=getattr(self.config, 'ref_pixel_y_opt', 4)
+        )
 
-    def process_exposure(self, raw_exposure_cube: np.ndarray,
-                         save_path: str) -> np.ndarray:
+    def correct_reference_pixels(self, raw_stack: np.ndarray) -> np.ndarray:
         """
-        Applies all preprocessing steps to a raw data cube.
-
+        Performs full reference pixel correction and then creates a difference stack
+        by subtracting the first frame from all subsequent frames.
         Args:
-            raw_exposure_cube (np.ndarray): The input data cube 
-                                            (frames, height, width).
-            save_path (str): place where the processed exposure will be saved to 
-                as a npy
-
+            raw_stack: Raw exposure stack of shape (T, H, W).
         Returns:
-            np.ndarray: The processed data, ready for patching and prediction.
-                        Typically this is the difference image cube.
+            A corrected difference stack of shape (T-1, H, W).
         """
-        # Check if file exists already
-        if exists(save_path):
-            print(f"Found existing processed file. Loading from: {save_path}")
-            return np.load(save_path)
+        self.logger.info("Starting reference pixel correction workflow...")
 
-        if raw_exposure_cube.ndim != 3 or raw_exposure_cube.shape[0] < 2:
-            raise ValueError("Input for preprocessing must be a 3D cube with at least 2 frames.")
+        # --- STEP 1: Apply the detailed reference pixel correction to each frame ---
+        self.logger.info("Applying reference pixel subtraction...")
+        corrected_stack = self.reference_pixel_corrector.batch_correct(raw_stack)
+        self.logger.info(f"Reference pixel correction complete. Corrected stack shape: {corrected_stack.shape}")
 
-        print(f"Preprocessing data cube of shape: {raw_exposure_cube.shape}")
+        # --- STEP 2: Create the difference stack by subtracting the 0th frame ---
+        self.logger.info("Creating difference stack by subtracting the 0th frame...")
         
-        current_cube = raw_exposure_cube
+        if corrected_stack.shape[0] < 2:
+            self.logger.warning("Cannot create difference stack, only one frame exists. Returning empty array.")
+            return np.array([], dtype=np.float32)
 
-        # --- Step 1: Reference Pixel Correction (Conditional) ---
-        if self.perform_ref_correction:
-            print("Applying reference pixel correction...")
-            current_cube = self.ref_corrector.batch_correct(current_cube)
-            print("Reference pixel correction complete.")
+        # Isolate the first frame as the reference
+        first_frame = corrected_stack[0].astype(np.float32)
         
-        # --- Step 2: Frame Differencing ---
-        # Create the difference image cube by subtracting the first frame from all subsequent frames.
-        print("Performing frame differencing...")
-        reference_frame = current_cube[0]
-        diff_image_cube = current_cube[1:] - reference_frame
-        print(f"Created difference image cube with shape: {diff_image_cube.shape}")
+        # Subtract the first frame from all subsequent frames
+        # Broadcasting handles the subtraction for each frame in the slice
+        diff_stack = corrected_stack[1:].astype(np.float32) - first_frame
+        
+        self.logger.info(f"Created final difference stack with shape: {diff_stack.shape}")
 
-        np.save(save_path, diff_image_cube)
+        return diff_stack
 
-        return diff_image_cube
+    def analyze_temporal(self, diff_stack: np.ndarray) -> dict:
+        """
+        Analyzes the difference stack by delegating to the TemporalAnalyzer.
+        Args:
+            diff_stack: The final, corrected difference stack.
+        Returns:
+            A dictionary of temporal feature maps.
+        """
+        self.logger.info("Delegating to TemporalAnalyzer for feature extraction...")
+        temporal_features = self.temporal_analyzer.analyze_temporal_patterns(diff_stack)
+        self.logger.info("Temporal analysis complete.")
+        return temporal_features
