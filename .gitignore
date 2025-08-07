@@ -232,3 +232,5 @@ docs/processed_exposure.npy
 docs/prediction_outputs
 
 docs/tut_prediction_outputs
+
+docs/cosmic_ray_event.gif

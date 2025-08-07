@@ -39,3 +39,14 @@ class DetectorConfig:
     rtn_frequency_range: Tuple[float, float] = (0.001, 0.5)
     rtn_fit_quality_threshold: float = 0.3
     rtn_min_confidence: float = 0.5
+
+    # Snowball parameters
+    snowball_min_confidence: float = 0.2
+    snowball_min_intensity: float = 30.0
+    snowball_max_intensity: float = 500.0
+    snowball_min_radius: int = 3
+    snowball_max_radius: int = 15
+    snowball_circularity_threshold: float = 0.7
+    snowball_expansion_rate: float = 0.1  # pixels per frame
+    snowball_min_area: int = 75
+    snowball_max_area: int = 120000

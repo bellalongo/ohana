@@ -8,6 +8,7 @@ from .predict.predictor import Predictor
 from .predict.base_predictor import BaseDetector
 from .predict.predict_cosmic_rays import CosmicRayDetector
 from .predict.predict_rtn import TelegraphNoiseDetector
+from .predict.predict_snowball import SnowballDetector
 
 from .models.unet_3d import UNet3D
 
@@ -29,6 +30,7 @@ __all__ = [
     "BaseDetector",
     "CosmicRayDetector",
     "TelegraphNoiseDetector",
+    "SnowballDetector",
     "DataLoader",
     "Preprocessor",
     "ReferencePixelCorrector",

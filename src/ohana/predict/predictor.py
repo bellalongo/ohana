@@ -10,7 +10,7 @@ from ..preprocessing.preprocessor import Preprocessor
 from ..models.unet_3d import UNet3D
 from .predict_cosmic_rays import CosmicRayDetector
 from .predict_rtn import TelegraphNoiseDetector
-from ..config import DetectorConfig
+from .predict_snowball import SnowballDetector
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -50,6 +50,9 @@ class Predictor:
 
         # Telegraph noise detector with shared configuration
         self.rtn_detector = TelegraphNoiseDetector(config)
+
+        # Telegraph noise detector with shared configuration
+        self.snowball_detector = SnowballDetector(config)
 
     def load_model(self, model_path):
         """
@@ -194,6 +197,16 @@ class Predictor:
             classified_rtns = self.rtn_detector.classify(rtn_candidates)
             all_classified_events.extend(classified_rtns)
             logging.info(f"Finalized {len(classified_rtns)} telegraph noise events.")
+
+        # --- Snowballs ---
+        logging.info("Detecting snowball candidates...")
+        sb_candidates = self.snowball_detector.detect(temporal_features, diff_stack)
+
+        if sb_candidates and sb_candidates.get('candidates'):
+            logging.info(f"Classifying {len(sb_candidates['candidates'])} snowball candidates...")
+            classified_sbs = self.snowball_detector.classify(sb_candidates)
+            all_classified_events.extend(classified_sbs)
+            logging.info(f"Finalized {len(classified_sbs)} snowball events.")
 
         # Return the full set of classified events
         return all_classified_events

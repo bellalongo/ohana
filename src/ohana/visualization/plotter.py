@@ -68,7 +68,7 @@ class ResultVisualizer:
         
         self.logger.info(f"Mask created with {len(np.unique(self.prediction_mask))-1} classes.")
 
-    def plot_full_mask_overlay(self, alpha=0.5, palette_name='viridis'):
+    def plot_full_mask_overlay(self, alpha=0.5, palette_name='Blues_r'):
         """
         Renders the median image with the prediction mask and detection markers.
         Args:
@@ -197,13 +197,13 @@ class ResultVisualizer:
             self.logger.info(f"Plotting detection {i+1}/{num_to_plot}: Type = {anomaly_type}")
 
             # Extract coordinates and other relevant info
-            if anomaly_type == 'cosmic_ray':
+            if anomaly_type == 'cosmic_ray_candidate':
                 # Use the centroid as the representative point for the plot
                 y, x = detection.get('centroid')
                 y, x = int(round(y)), int(round(x))
                 self.plot_event_region_and_timeseries(y, x, radius=radius, palette_name=palette_name)
 
-            elif anomaly_type == 'telegraph_noise':
+            elif anomaly_type == 'rtn_candidate':
                 y, x = detection.get('position')
                 y, x = int(y), int(x)
                 high_state = detection.get('high_state_value')
@@ -219,23 +219,10 @@ class ResultVisualizer:
             else:
                 self.logger.warning(f"Unknown detection type '{anomaly_type}' for detection {i+1}. Skipping plot.")
 
-    def create_event_movie(self, y, x, output_path, radius=20, fps=5, palette_name='viridis'):
+    def create_event_movie(self, y, x, output_path, radius=20, fps=5, palette_name='Blues_r', vmin=None, vmax=None):
         """
-        Creates and saves a movie (e.g., GIF or MP4) of the temporal evolution
-        of a spatial region around a specific event.
-
-        Args:
-            y (int): The row index of the event's center.
-            x (int): The column index of the event's center.
-            output_path (str): The path to save the output movie (e.g., 'event.gif').
-            radius (int): The radius for the square spatial cutout around the event.
-            fps (int): Frames per second for the output movie.
-            palette_name (str): The Matplotlib colormap to use for the movie frames.
-        
-        Notes:
-            Requires a writer like 'ffmpeg' or 'imagemagick' to be installed and
-            configured with Matplotlib. You can install ffmpeg via:
-            `conda install -c conda-forge ffmpeg` or `sudo apt-get install ffmpeg`.
+        Creates and saves a movie of a spatial region around an event.
+        Now accepts optional vmin and vmax for a consistent color scale.
         """
         self.logger.info(f"Creating event movie for pixel ({y},{x}) at {output_path}...")
 
@@ -246,23 +233,17 @@ class ResultVisualizer:
         
         region_cube = self.diff_image_cube[:, y_start:y_end, x_start:x_end]
         
-        # Determine a consistent color scale for the entire movie
-        vmin, vmax = np.percentile(region_cube, [1, 99])
+        # --- Use provided vmin/vmax or calculate locally if not given ---
+        if vmin is None or vmax is None:
+            self.logger.info("vmin/vmax not provided, calculating from local region.")
+            vmin, vmax = np.percentile(region_cube, [1, 99])
 
         # --- 2. Set up the plot ---
         fig, ax = plt.subplots(figsize=(8, 8))
-        
-        # Display the first frame as the initial image
         im = ax.imshow(
-            region_cube[0],
-            cmap=palette_name,
-            vmin=vmin,
-            vmax=vmax,
-            origin='lower',
-            interpolation='none'
+            region_cube[0], cmap=palette_name, vmin=vmin, vmax=vmax,
+            origin='lower', interpolation='none'
         )
-        
-        # Add a colorbar
         plt.colorbar(im, ax=ax, label='Pixel Value (DN)')
         ax.set_xlabel('X Pixel (Relative)')
         ax.set_ylabel('Y Pixel (Relative)')
@@ -270,26 +251,17 @@ class ResultVisualizer:
 
         # --- 3. Define the animation update function ---
         def update(frame_idx):
-            """This function is called for each frame of the animation."""
             im.set_data(region_cube[frame_idx])
             title.set_text(f"Event at ({y},{x}) - Frame {frame_idx}")
             return [im, title]
 
         # --- 4. Create and save the animation ---
         ani = animation.FuncAnimation(
-            fig,
-            update,
-            frames=T,
-            interval=1000 / fps,
-            blit=True
+            fig, update, frames=T, interval=1000 / fps, blit=True
         )
-
         try:
-            self.logger.info(f"Saving animation to {output_path} (this may take a moment)...")
             ani.save(output_path, writer='ffmpeg', fps=fps)
-            self.logger.info("Animation saved successfully.")
+            self.logger.info(f"Animation saved successfully to {output_path}.")
         except Exception as e:
-            self.logger.error(f"Failed to save animation. Make sure 'ffmpeg' is installed.")
-            self.logger.error(f"Error: {e}")
-
+            self.logger.error(f"Failed to save animation. Make sure 'ffmpeg' is installed. Error: {e}")
         plt.close(fig)

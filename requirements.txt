@@ -1,0 +1,19 @@
+# Core ML & Scientific Computing
+torch==2.2.2
+numpy==1.26.4
+scipy==1.16.1
+numba==0.61.2
+
+# Image Processing
+scikit-image==0.25.2
+
+# Data & Configs
+pandas==2.3.1
+h5py==3.14.0
+PyYAML==6.0.2
+
+# Astronomy-specific
+astropy==7.1.0
+
+# Utilities
+tqdm==4.67.1
